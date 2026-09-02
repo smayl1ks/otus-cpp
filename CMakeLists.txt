@@ -9,7 +9,7 @@ option(WITH_BOOST_TEST "Whether to build Boost test" ON)
 
 configure_file(version.h.in version.h)
 
-set(PROJECT_NAME_CLI "ip_filter_cli")
+set(PROJECT_NAME_CLI "ip_filter")
 
 add_executable(${PROJECT_NAME_CLI} ip_filter.cpp)
 add_library(helloworld lib.cpp)
