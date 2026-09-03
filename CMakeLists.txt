@@ -4,10 +4,10 @@ if(POLICY CMP0167)
     cmake_policy(SET CMP0167 NEW)
 endif()
 
-set(PATCH_VERSION "1" CACHE INTERNAL "Patch version")
+set(PATCH_VERSION "1" CACHE STRING "Patch version")
 set(PROJECT_VERSION 0.0.${PATCH_VERSION})
 
-project(ip_filter VERSION ${PROJECT_VESRION})
+project(ip_filter VERSION ${PROJECT_VERSION})
 
 option(WITH_BOOST_TEST "Whether to build Boost test" ON)
 
@@ -28,10 +28,6 @@ target_include_directories(ip_filter PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
-# target_link_libraries(${PROJECT_NAME_CLI} PRIVATE
-#     ${PROJECT_NAME}
-# )
-
 if(WITH_BOOST_TEST)
     find_package(Boost COMPONENTS unit_test_framework REQUIRED)
     
@@ -42,52 +38,39 @@ if(WITH_BOOST_TEST)
         CXX_STANDARD_REQUIRED ON
     )
 
-    set_target_properties(test_version PROPERTIES
-        COMPILE_DEFINITIONS BOOST_TEST_DYN_LINK
-        INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}"
-    )
+    target_compile_definitions(test_version PRIVATE BOOST_TEST_DYN_LINK)
+    target_include_directories(test_version PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
-    target_link_libraries(test_version
-        ${Boost_LIBRARIES}
+    target_link_libraries(test_version PRIVATE
+        Boost::unit_test_framework
     )
 endif()
 
 if (MSVC)
-    # target_compile_options(PROJECT_NAME_CLI PRIVATE
-    #     /W4
-    # )
-    target_compile_options(ip_filter PRIVATE
-        /W4
-    )
+    target_compile_options(ip_filter PRIVATE /W4)
     if(WITH_BOOST_TEST)
-        target_compile_options(test_version PRIVATE
-            /W4
-        )
+        target_compile_options(test_version PRIVATE /W4)
     endif()
 else ()
-    target_compile_options(ip_filter PRIVATE
-        -Wall -Wextra -pedantic -Werror
-    )
-    target_compile_options(ip_filter PRIVATE
-        -Wall -Wextra -pedantic -Werror
-    )
+    target_compile_options(ip_filter PRIVATE -Wall -Wextra -pedantic -Werror)
     if(WITH_BOOST_TEST)
-        target_compile_options(test_version PRIVATE
-            -Wall -Wextra -pedantic -Werror
-        )
+        target_compile_options(test_version PRIVATE -Wall -Wextra -pedantic -Werror)
     endif()
 endif()
 
 install(TARGETS ip_filter RUNTIME DESTINATION bin)
 
-set(CPACK_GENERATOR DEB)
-set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
-set(CPACK_PACKAGE_VERSION_MINOR "${PROJECT_VERSION_MINOR}")
-set(CPACK_PACKAGE_VERSION_PATCH "${PROJECT_VERSION_PATCH}")
-set(CPACK_PACKAGE_CONTACT example@example.com)
+# Настройки CPack
+set(CPACK_GENERATOR "DEB")
+set(CPACK_PACKAGE_NAME "ip_filter")
+set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_RELEASE "1")
+set(CPACK_PACKAGE_CONTACT "example@example.com")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "example@example.com")
+
 include(CPack)
 
 if(WITH_BOOST_TEST)
     enable_testing()
-    add_test(test_version test_version)
+    add_test(NAME test_version COMMAND test_version)
 endif()
