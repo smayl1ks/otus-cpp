@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cassert>
 #include <cstdlib>
 #include <iostream>
@@ -6,10 +8,13 @@
 #include <array>
 #include <algorithm>
 
+namespace filter
+{
+
 using IP = std::array<int, 4>;
 using IPPool = std::vector<IP>;
 
-void print_ip_pool(const IPPool& ip_pool)
+inline void print_ip_pool(const IPPool& ip_pool)
 {
     for (const auto& ip : ip_pool)
     {
@@ -22,7 +27,7 @@ void print_ip_pool(const IPPool& ip_pool)
     }
 }
 
-void reverse_lexicographically_sort(IPPool& ip_pool)
+inline void reverse_lexicographically_sort(IPPool& ip_pool)
 {
     std::sort(ip_pool.begin(), ip_pool.end(), std::greater<IP>());
 }
@@ -85,50 +90,4 @@ IPPool filter_any(const IPPool& ip_pool, Args... args)
     return filtered_ip_pool;
 }
 
-int main(int argc, char const *argv[])
-{
-    (void)argc;
-    (void)argv;
-
-    try
-    {
-        IPPool ip_pool;
-        for(std::string line; std::getline(std::cin, line);)
-        {
-            if (line.empty())
-            {
-                continue;
-            }
-
-            std::array<int, 4> ip;
-
-            if (std::sscanf(line.c_str(), "%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]) == 4)
-            {
-                ip_pool.push_back(ip);
-            }
-        }
-
-        reverse_lexicographically_sort(ip_pool);
-
-        print_ip_pool(ip_pool);
-
-        print_ip_pool(filter(ip_pool, 1));
-
-        // TODO filter by first and second bytes and output
-        // ip = filter(46, 70)
-
-        print_ip_pool(filter(ip_pool, 46, 70));
-
-        // TODO filter by any byte and output
-        // ip = filter_any(46)
-
-        print_ip_pool(filter_any(ip_pool, 46));
-
-    }
-    catch(const std::exception &e)
-    {
-        std::cerr << e.what() << std::endl;
-    }
-
-    return 0;
-}
+} // namespace filter
