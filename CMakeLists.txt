@@ -17,14 +17,14 @@ configure_file(
     @ONLY
 )
 
-add_executable(${PROJECT_NAME} src/main.cpp)
+add_executable(ip_filter src/main.cpp)
 
-set_target_properties(${PROJECT_NAME} PROPERTIES
+set_target_properties(ip_filter PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
 )
 
-target_include_directories(${PROJECT_NAME} PRIVATE 
+target_include_directories(ip_filter PRIVATE 
     "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
@@ -53,10 +53,10 @@ if(WITH_BOOST_TEST)
 endif()
 
 if (MSVC)
-    target_compile_options(PROJECT_NAME_CLI PRIVATE
-        /W4
-    )
-    target_compile_options(${PROJECT_NAME} PRIVATE
+    # target_compile_options(PROJECT_NAME_CLI PRIVATE
+    #     /W4
+    # )
+    target_compile_options(ip_filter PRIVATE
         /W4
     )
     if(WITH_BOOST_TEST)
@@ -65,10 +65,10 @@ if (MSVC)
         )
     endif()
 else ()
-    target_compile_options(${PROJECT_NAME} PRIVATE
+    target_compile_options(ip_filter PRIVATE
         -Wall -Wextra -pedantic -Werror
     )
-    target_compile_options(${PROJECT_NAME} PRIVATE
+    target_compile_options(ip_filter PRIVATE
         -Wall -Wextra -pedantic -Werror
     )
     if(WITH_BOOST_TEST)
@@ -78,7 +78,7 @@ else ()
     endif()
 endif()
 
-install(TARGETS ${PROJECT_NAME} RUNTIME DESTINATION bin)
+install(TARGETS ip_filter RUNTIME DESTINATION bin)
 
 set(CPACK_GENERATOR DEB)
 set(CPACK_PACKAGE_VERSION_MAJOR "${PROJECT_VERSION_MAJOR}")
