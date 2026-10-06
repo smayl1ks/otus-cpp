@@ -1,0 +1,53 @@
+---
+# clang-format file
+# version 1
+
+# The style used for all options not specifically set in the configuration.
+BasedOnStyle:  LLVM
+
+# The number of columns to use for indentation.
+IndentWidth: 4
+---
+# Next options should be used for C, C++, ObjectiveC, ObjectiveC++.
+Language: Cpp
+
+# The extra indent or outdent of access modifiers, e.g. public:.
+AccessModifierOffset: -4
+
+# Dependent on the value, while (true) { continue; } can be put on a single line.
+# Empty - only merge empty blocks.
+AllowShortBlocksOnASingleLine: Empty
+
+# Dependent on the value, if (a) return; can be put on a single line.
+# Never - never put short ifs on the same line.
+AllowShortIfStatementsOnASingleLine: Never
+
+# If true, while (true) continue; can be put on a single line.
+AllowShortLoopsOnASingleLine: false
+
+# Dependent on the value, int f() { return 0; } can be put on a single line.
+# None - Never merge functions into a single line.
+AllowShortFunctionsOnASingleLine: None
+
+# Allow short enums on a single line.
+AllowShortEnumsOnASingleLine: false
+
+# The brace breaking style to use.
+BreakBeforeBraces: Allman
+
+# The column limit.
+ColumnLimit: 120
+
+# Pointer and reference alignment style.
+PointerAlignment: Left
+
+# Reference alignment style (overrides PointerAlignment for references).
+ReferenceAlignment: Left
+
+# Specifies the use of empty lines to separate definition blocks,
+# including classes, structs, enums, and functions.
+SeparateDefinitionBlocks: Always
+
+# The template declaration breaking style to use.
+# Yes - Always break after template declaration.
+AlwaysBreakTemplateDeclarations: Yes

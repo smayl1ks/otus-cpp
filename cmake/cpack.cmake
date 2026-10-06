@@ -1,0 +1,16 @@
+function(MakePackage project_name postinst_path)
+  set(CPACK_GENERATOR "DEB")
+  set(CPACK_DEBIAN_FILE_NAME DEB-DEFAULT)
+  set(CPACK_PACKAGE_CONTACT "shchiptsovra@gmail.com")
+  set(CPACK_DEBIAN_PACKAGE_MAINTAINER "smayl1ks")
+  set(CPACK_PACKAGING_INSTALL_PREFIX "/")
+  set(CPACK_PACKAGE_NAME ${project_name})
+  set(CPACK_DEBIAN_PACKAGE_CONTROL_EXTRA ${postinst_path})
+
+  set(CPACK_PACKAGE_VERSION_MAJOR ${VERSION_MAJOR})
+  set(CPACK_PACKAGE_VERSION_MINOR ${VERSION_MINOR})
+  set(CPACK_PACKAGE_VERSION_PATCH ${VERSION_PATCH})
+  set(CPACK_PACKAGE_VERSION ${version})
+  
+  include (CPack)
+endfunction()
