@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package run.proto;
+
+import "location.proto";
+import "events.proto";
+
+// Common message envelope for multiplexing WebSocket streams
+message Envelope {
+  // Optional envelope metadata header
+  string message_id = 1;        // Unique message tracking ID (UUID)
+  int64 timestamp = 2;          // Envelope emission epoch timestamp in milliseconds
+
+  oneof payload {
+    // Location batching telemetry
+    location.LocationBatch location_batch = 10;
+    location.LocationBatchAck location_batch_ack = 11;
+
+    // Session lifecycle events
+    events.StartRunRequest start_run_request = 20;
+    events.StartRunResponse start_run_response = 21;
+    events.FinishRunRequest finish_run_request = 22;
+    events.FinishRunResponse finish_run_response = 23;
+  }
+}

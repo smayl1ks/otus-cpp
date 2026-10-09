@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package run.proto.location;
+
+message LocationPoint {
+  double latitude = 1;
+  double longitude = 2;
+  double altitude = 3;
+  float speed = 4;
+  float heading = 5;
+  float accuracy = 6;
+  int64 timestamp = 7;
+  float accelerometer_z = 8;
+  bool is_mock = 9;
+}
+
+message H3Cell {
+  uint64 index = 1;
+  int32 resolution = 2;
+}
+
+enum RunningState {
+  RUNNING_STATE_UNSPECIFIED = 0;
+  RUNNING_STATE_ACTIVE = 1;
+  RUNNING_STATE_PAUSED = 2;
+  RUNNING_STATE_FINISHED = 3;
+}
+
+message LocationBatch {
+  string session_id = 1;
+  string batch_uuid = 2;
+  int64 sequence_number = 3;
+  RunningState state = 4;
+  repeated LocationPoint points = 5;
+}
+
+message LocationBatchAck {
+  string session_id = 1;
+  string batch_uuid = 2;
+  int64 sequence_number = 3;
+}

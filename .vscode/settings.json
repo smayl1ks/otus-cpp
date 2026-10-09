@@ -15,8 +15,12 @@
     "--clang-tidy",
     "--background-index",
     "--completion-style=detailed",
-    "--header-insertion=iwyu"
+    "--header-insertion=iwyu",
+    "--compile-commands-dir=${workspaceFolder}/build"
   ],
 
-  "cmake.exportCompileCommandsFile": true
+  "cmake.exportCompileCommandsFile": true,
+  "cmake.configureSettings": {
+    "CMAKE_TOOLCHAIN_FILE": "${env:VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+  }
 }

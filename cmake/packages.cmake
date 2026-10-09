@@ -1,5 +1,4 @@
 find_package(Boost REQUIRED CONFIG COMPONENTS system container program_options redis uuid)
-
 find_package(OpenSSL REQUIRED)
 find_package(GTest REQUIRED)
 find_package(Threads REQUIRED)
@@ -20,7 +19,6 @@ set(PACKAGES_LINK_LIBRARIES
     OpenSSL::SSL
     OpenSSL::Crypto
     Threads::Threads
-    GTest::gtest
     spdlog::spdlog_header_only
     h3::h3
     jwt-cpp::jwt-cpp
@@ -28,9 +26,4 @@ set(PACKAGES_LINK_LIBRARIES
     libpqxx::pqxx
     unofficial-sodium::sodium
     nlohmann_json::nlohmann_json
-)
-
-set(PACKAGES_INCLUDE_DIRECTORIES
-        ${Boost_INCLUDE_DIRS}
-        ${OPENSSL_INCLUDE_DIR}
 )

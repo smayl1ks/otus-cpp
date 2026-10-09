@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package common;
+
+// System-level transport and RPC status codes.
+enum SystemStatus {
+  SYSTEM_STATUS_UNSPECIFIED = 0;
+  SYSTEM_STATUS_OK = 1;
+  SYSTEM_STATUS_UNAUTHORIZED = 2;           // Invalid or expired authentication token.
+  SYSTEM_STATUS_INVALID_PAYLOAD = 3;        // Binary deserialization failure or structural error.
+  SYSTEM_STATUS_INTERNAL_SERVER_ERROR = 4;  // Database, cache, or infrastructure failure.
+  SYSTEM_STATUS_SERVICE_UNAVAILABLE = 5;    // Server rate limit reached or backpressure active.
+}
+
+enum AnticheatStatus {
+  ANTICHEAT_STATUS_UNSPECIFIED = 0;
+  ANTICHEAT_STATUS_OK = 1;
+  ANTICHEAT_STATUS_BATCH_TOO_LARGE = 2;
+  ANTICHEAT_STATUS_GPS_ACCURACY_LOW = 3;
+  ANTICHEAT_STATUS_INVALID_TIMESTAMPS = 4;
+  ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED = 5;
+  ANTICHEAT_STATUS_TELEPORTATION_DETECTED = 6;
+  ANTICHEAT_STATUS_MOCK_DETECTED = 7;
+}

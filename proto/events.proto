@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package events;
+
+import "common.proto";
+
+// Domain-specific rejection reasons for session initialization.
+enum StartRunRejectReason {
+  START_REJECT_REASON_NONE = 0;                  // Request accepted.
+  START_REJECT_REASON_ACTIVE_SESSION_EXISTS = 1; // User already has an ongoing active run.
+  START_REJECT_REASON_USER_BLOCKED = 2;          // Account is suspended or flagged for cheating.
+  START_REJECT_REASON_INVALID_FACTION = 3;       // Specified faction ID is invalid or inactive.
+}
+
+// Domain-specific rejection reasons for session finalization.
+enum FinishRunRejectReason {
+  FINISH_REJECT_REASON_NONE = 0;                 // Run finalized successfully.
+  FINISH_REJECT_REASON_SESSION_NOT_FOUND = 1;   // Provided session_id does not exist or expired in Redis.
+  FINISH_REJECT_REASON_ALREADY_FINISHED = 2;    // Run was previously closed.
+  FINISH_REJECT_REASON_INSUFFICIENT_DATA = 3;   // Run rejected due to lack of valid GPS points.
+}
+
+// Request payload to initialize a new running session.
+message StartRunRequest {
+  string session_id = 1;      // Client generated UUIDv4 for idempotency and trace tracking.
+  uint32 faction_id = 2;      // Active faction ID selected for territory capture.
+  int64 start_timestamp = 3;  // Device epoch time in milliseconds when user tapped "start".
+}
+
+message StartRunResponse {
+  common.SystemStatus system_status = 1; // Transport/system RPC code.
+  StartRunRejectReason reject_reason = 2; // Business rejection reason if start failed.
+  string session_id = 3;      // Confirmed workout session ID (UUIDv4).
+  int64 server_start_timestamp = 4; // Server-validated epoch start time.
+}
+
+message FinishRunRequest {
+  string session_id = 1;      // Session identifier being terminated.
+  int64 finish_timestamp = 2; // Device epoch time in milliseconds when user tapped "Finish".
+}
+
+message FinishRunResponse {
+  common.SystemStatus system_status = 1;           // Transport/system RPC code.
+  FinishRunRejectReason reject_reason = 2;        // Business rejection reason if finish failed.
+
+  string session_id = 3;              // Finalized session ID.
+  
+  double total_distance_meters = 4;   // Total accumulated, server-validated distance.
+  uint32 duration_seconds = 5;        // Net active run time in seconds (excluding pauses).
+  uint32 hexes_claimed_count = 6;     // Total H3 cells newly captured or reinforced.
+  uint32 total_score = 7;             // Final earned score contributed to user/faction totals.
+  float average_speed_kmh = 8;        // Calculated average moving speed across the run.
+}
