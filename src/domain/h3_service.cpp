@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <sstream>
 #include <unordered_set>
 
 namespace run::domain::h3

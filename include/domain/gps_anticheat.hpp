@@ -73,10 +73,10 @@ private:
                                           int64_t current_server_time_ms) const noexcept;
 
     /**
-     * @brief Validates kinematic parameters between two consecutive GPS measurements.
+     * @brief Validates kinematic parameters between two points.
      */
-    common::AnticheatStatus ValidateSegment(const run::proto::location::LocationPoint& prev,
-                                            const run::proto::location::LocationPoint& curr) const noexcept;
+    common::AnticheatStatus ValidateSegment(const run::proto::location::LocationPoint& prev_point,
+                                            const run::proto::location::LocationPoint& curr_point) const noexcept;
 
 private:
     GpsAntiCheatConfig m_config;

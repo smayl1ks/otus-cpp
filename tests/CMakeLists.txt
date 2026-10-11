@@ -1,6 +1,7 @@
 add_executable(unit_tests
-    anticheat_test.cpp
+    gps_anticheat_test.cpp
     h3_service_test.cpp
+    run_validator_test.cpp
 )
 
 target_link_libraries(unit_tests PRIVATE
