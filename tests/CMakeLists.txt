@@ -1,6 +1,7 @@
 add_executable(unit_tests
     gps_anticheat_test.cpp
     h3_service_test.cpp
+    h3_capture_resolver_test.cpp
     run_validator_test.cpp
 )
 

@@ -53,7 +53,7 @@ public:
                                              int parent_resolution) const noexcept;
 
     std::vector<GeoCoordinates> GetHexagonBoundary(H3IndexValue cell) const noexcept;
-
+    std::vector<H3IndexValue> PolygonToHexagons(const GeoPolygon& polygon) const noexcept;
     static double GetDistanceMeters(double lat1, double lng1, double lat2, double lng2) noexcept;
 
     static std::string ToString(H3IndexValue cell);

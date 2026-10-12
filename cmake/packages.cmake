@@ -9,6 +9,7 @@ find_package(jwt-cpp CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(libpqxx CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(prometheus-cpp CONFIG REQUIRED)
 
 set(PACKAGES_LINK_LIBRARIES
     Boost::program_options
@@ -26,4 +27,6 @@ set(PACKAGES_LINK_LIBRARIES
     libpqxx::pqxx
     unofficial-sodium::sodium
     nlohmann_json::nlohmann_json
+    prometheus-cpp::core
+    prometheus-cpp::pull
 )

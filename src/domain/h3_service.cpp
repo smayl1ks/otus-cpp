@@ -242,4 +242,25 @@ std::optional<H3IndexValue> H3Service::FromString(const std::string& h3_str) noe
     return cell;
 }
 
+std::vector<H3IndexValue> H3Service::PolygonToHexagons(const GeoPolygon& polygon) const noexcept
+{
+    int64_t max_cells = 0;
+
+    const int resolution = m_config.default_resolution;
+
+    if (maxPolygonToCellsSize(&polygon, resolution, 0, &max_cells) != E_SUCCESS || max_cells <= 0)
+    {
+        return {};
+    }
+
+    std::vector<H3IndexValue> cells(static_cast<std::size_t>(max_cells), H3_NULL);
+    if (polygonToCells(&polygon, resolution, 0, cells.data()) != E_SUCCESS)
+    {
+        return {};
+    }
+
+    cells.erase(std::remove(cells.begin(), cells.end(), H3_NULL), cells.end());
+    return cells;
+}
+
 } // namespace run::domain::h3

@@ -229,4 +229,28 @@ TEST_F(H3ServiceTest, GetDistanceMeters_KnownPoints_ReturnsAccurateDistance)
     EXPECT_NEAR(distance, 581.4, 5.0);
 }
 
+TEST_F(H3ServiceTest, PolygonToCells_BasicSquare)
+{
+    double sw_lat = 55.750, sw_lng = 37.600;
+    double ne_lat = 55.755, ne_lng = 37.610;
+
+    LatLng verts[4];
+    verts[0] = {degsToRads(sw_lat), degsToRads(sw_lng)}; // SW
+    verts[1] = {degsToRads(sw_lat), degsToRads(ne_lng)}; // SE
+    verts[2] = {degsToRads(ne_lat), degsToRads(ne_lng)}; // NE
+    verts[3] = {degsToRads(ne_lat), degsToRads(sw_lng)}; // NW
+
+    GeoLoop outer_loop{.numVerts = 4, .verts = verts};
+    GeoPolygon polygon{.geoloop = outer_loop, .numHoles = 0, .holes = nullptr};
+
+    std::vector<H3IndexValue> cells = m_service.PolygonToHexagons(polygon);
+
+    EXPECT_FALSE(cells.empty());
+
+    for (auto cell : cells)
+    {
+        EXPECT_NE(cell, 0);
+    }
+}
+
 } // namespace run::domain::h3::testing

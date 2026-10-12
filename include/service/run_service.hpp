@@ -1,7 +1,7 @@
 #pragma once
 
-#include "domain/capture_processor.hpp"
 #include "domain/gps_anticheat.hpp"
+#include "domain/h3_capture_resolver.hpp"
 #include "domain/h3_service.hpp"
 #include "domain/run_validator.hpp"
 

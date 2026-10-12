@@ -19,6 +19,7 @@
     "libpqxx",
     "libsodium",
     "jwt-cpp",
-    "nlohmann-json"
+    "nlohmann-json",
+    "prometheus-cpp"
   ]
 }
