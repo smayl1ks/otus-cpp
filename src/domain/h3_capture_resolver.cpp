@@ -1,196 +1,242 @@
 #include "domain/h3_capture_resolver.hpp"
+
 #include <algorithm>
+#include <cmath>
+#include <numbers>
+#include <optional>
 #include <unordered_map>
-#include <unordered_set>
 
 namespace run::domain::h3
 {
 
-H3CaptureResolver::H3CaptureResolver(const H3Service& h3_service, std::size_t min_points_per_h3) noexcept
-    : m_h3_service(h3_service), m_min_points_per_h3(min_points_per_h3)
+namespace
+{
+
+constexpr double g_EarthRadiusMeters = 6371000.0; // WGS84
+constexpr double g_DegToRad = std::numbers::pi / 180.0;
+constexpr double g_CoordEpsilon = 1e-9;
+constexpr double g_MaxNeighborClosureMeters = 60.0;
+constexpr double g_MinLoopRatio = 3.0;
+
+} // namespace
+
+H3CaptureResolver::H3CaptureResolver(const H3Service& h3_service, H3CaptureConfig config) noexcept
+    : m_h3_service(h3_service), m_config(config)
 {
 }
 
-std::vector<H3IndexValue> H3CaptureResolver::Resolve(const LocationPoints& points) const
+CaptureResult H3CaptureResolver::Resolve(const LocationPoints& points) const
 {
+    CaptureResult result;
     if (points.empty())
     {
         return {};
     }
 
-    std::vector<PathPoint> path = BuildPath(points);
-    if (path.empty())
+    const auto track = BuildTrack(points, result.total_distance_meters);
+    if (track.empty())
     {
         return {};
     }
 
-    std::vector<H3IndexValue> all_claimed;
-    all_claimed.reserve(path.size() * 2);
+    result.boundary_hexes = FilterBoundaryHexes(track);
 
-    for (const auto& pt : path)
+    if (m_config.enable_loop_capture)
     {
-        all_claimed.push_back(pt.hex);
+        DetectAndFillLoops(track, result.enclosed_hexes);
     }
 
-    AppendLoopsAndEnclosed(path, all_claimed);
+    result.claimed_hexes.reserve(result.boundary_hexes.size() + result.enclosed_hexes.size());
+    result.claimed_hexes.insert(result.claimed_hexes.end(), result.boundary_hexes.begin(), result.boundary_hexes.end());
+    result.claimed_hexes.insert(result.claimed_hexes.end(), result.enclosed_hexes.begin(), result.enclosed_hexes.end());
 
-    std::sort(all_claimed.begin(), all_claimed.end());
-    all_claimed.erase(std::unique(all_claimed.begin(), all_claimed.end()), all_claimed.end());
+    std::sort(result.claimed_hexes.begin(), result.claimed_hexes.end());
+    result.claimed_hexes.erase(std::unique(result.claimed_hexes.begin(), result.claimed_hexes.end()),
+                               result.claimed_hexes.end());
 
-    return all_claimed;
+    result.claimed_hexes.erase(std::remove_if(result.claimed_hexes.begin(), result.claimed_hexes.end(),
+                                              [](H3IndexValue cell) { return cell == 0 || !H3Service::IsValid(cell); }),
+                               result.claimed_hexes.end());
+
+    return result;
 }
 
-std::vector<H3CaptureResolver::PathPoint> H3CaptureResolver::BuildPath(const LocationPoints& points) const
+std::vector<H3CaptureResolver::ProcessedPoint> H3CaptureResolver::BuildTrack(const LocationPoints& points,
+                                                                             double& out_total_distance) const
 {
-    std::unordered_map<uint64_t, std::size_t> point_counts;
-    point_counts.reserve(points.size());
-
-    struct RawPointInfo
-    {
-        uint64_t hex;
-        double lat;
-        double lon;
-        std::size_t index;
-    };
-
-    std::vector<RawPointInfo> raw_sequence;
-    raw_sequence.reserve(points.size());
-
-    for (std::size_t i = 0; i < static_cast<std::size_t>(points.size()); ++i)
-    {
-        const auto& p = points.Get(i);
-        const auto h3 = m_h3_service.PointToH3(p.latitude(), p.longitude());
-        if (!h3)
-        {
-            continue;
-        }
-
-        point_counts[*h3]++;
-        raw_sequence.push_back({*h3, p.latitude(), p.longitude(), i});
-    }
-
-    std::unordered_set<uint64_t> qualified_hexes;
-    qualified_hexes.reserve(point_counts.size());
-
-    for (const auto& [hex, count] : point_counts)
-    {
-        if (count >= m_min_points_per_h3)
-        {
-            qualified_hexes.insert(hex);
-        }
-    }
-
-    if (qualified_hexes.empty())
+    out_total_distance = 0.0;
+    if (points.empty())
     {
         return {};
     }
 
-    std::vector<PathPoint> path;
-    path.reserve(raw_sequence.size() * 2);
+    std::vector<ProcessedPoint> track;
+    track.reserve(points.size());
 
-    for (const auto& raw : raw_sequence)
+    for (int i = 0; i < points.size(); ++i)
     {
-        if (!qualified_hexes.contains(raw.hex))
+        const auto& p = points.Get(i);
+
+        const auto hex_opt = m_h3_service.PointToH3(p.latitude(), p.longitude());
+        if (!hex_opt.has_value() || !H3Service::IsValid(*hex_opt))
         {
             continue;
         }
 
-        if (path.empty())
+        double cum_dist = 0.0;
+        if (!track.empty())
         {
-            path.push_back({raw.hex, raw.lat, raw.lon, raw.index});
-            continue;
+            const auto& prev = track.back();
+            const double seg_dist = H3Service::GetDistanceMeters(prev.lat, prev.lon, p.latitude(), p.longitude());
+            cum_dist = prev.cum_distance + seg_dist;
+            out_total_distance += seg_dist;
         }
 
-        const uint64_t last_hex = path.back().hex;
-        if (last_hex == raw.hex)
-        {
-            continue;
-        }
+        track.push_back(
+            ProcessedPoint{.hex = *hex_opt, .lat = p.latitude(), .lon = p.longitude(), .cum_distance = cum_dist});
+    }
 
-        auto sub_path = m_h3_service.GetPathBetweenHexes(last_hex, raw.hex);
-        if (sub_path.empty())
+    return track;
+}
+
+std::vector<H3IndexValue> H3CaptureResolver::FilterBoundaryHexes(const std::vector<ProcessedPoint>& track) const
+{
+    if (track.empty())
+    {
+        return {};
+    }
+
+    std::unordered_map<H3IndexValue, std::size_t> point_counts;
+    std::unordered_map<H3IndexValue, double> hex_distances;
+
+    point_counts.reserve(track.size());
+    hex_distances.reserve(track.size());
+
+    point_counts[track.front().hex] = 1;
+
+    for (std::size_t i = 1; i < track.size(); ++i)
+    {
+        const auto& prev = track[i - 1];
+        const auto& curr = track[i];
+
+        point_counts[curr.hex]++;
+
+        const double seg_dist = H3Service::GetDistanceMeters(prev.lat, prev.lon, curr.lat, curr.lon);
+
+        if (prev.hex == curr.hex)
         {
-            path.push_back({raw.hex, raw.lat, raw.lon, raw.index});
+            hex_distances[curr.hex] += seg_dist;
         }
         else
         {
-            for (std::size_t k = 1; k < sub_path.size(); ++k)
+            // Boundary crossing: split distance between exiting and entering hex
+            hex_distances[prev.hex] += seg_dist * 0.5;
+            hex_distances[curr.hex] += seg_dist * 0.5;
+        }
+    }
+
+    std::vector<H3IndexValue> qualified;
+    qualified.reserve(point_counts.size());
+
+    for (const auto& [hex, count] : point_counts)
+    {
+        if (count >= m_config.min_points_per_hex)
+        {
+            double dist = 0.0;
+            if (auto it = hex_distances.find(hex); it != hex_distances.end())
             {
-                path.push_back({sub_path[k], raw.lat, raw.lon, raw.index});
+                dist = it->second;
+            }
+
+            if (dist >= m_config.min_distance_per_hex_meters)
+            {
+                qualified.push_back(hex);
             }
         }
     }
 
-    return path;
+    return qualified;
 }
 
-void H3CaptureResolver::AppendLoopsAndEnclosed(const std::vector<PathPoint>& path,
-                                               std::vector<H3IndexValue>& out_claimed) const
+double H3CaptureResolver::CalculateSignedPolygonAreaM2(const std::vector<ProcessedPoint>& track, std::size_t start_idx,
+                                                       std::size_t end_idx) noexcept
 {
-    if (path.size() < 4)
+    if (end_idx <= start_idx + 2)
     {
-        return;
+        return 0.0;
     }
 
-    std::size_t i = 0;
-    while (i < path.size())
+    double sum_lat = 0.0;
+    for (std::size_t i = start_idx; i <= end_idx; ++i)
     {
-        std::unordered_map<uint64_t, std::size_t> first_seen_index;
-        bool found_loop = false;
-        std::size_t loop_start = 0;
-        std::size_t loop_end = 0;
-
-        for (std::size_t j = i; j < path.size(); ++j)
-        {
-            uint64_t hex = path[j].hex;
-            if (auto it = first_seen_index.find(hex); it != first_seen_index.end())
-            {
-                loop_start = it->second;
-                loop_end = j;
-                found_loop = true;
-                break;
-            }
-            first_seen_index[hex] = j;
-        }
-
-        if (!found_loop)
-        {
-            break;
-        }
-
-        if (loop_end - loop_start > 5)
-        {
-            for (std::size_t idx = loop_start; idx <= loop_end; ++idx)
-            {
-                out_claimed.push_back(path[idx].hex);
-            }
-
-            auto enclosed = FillLoop(path, loop_start, loop_end);
-            out_claimed.insert(out_claimed.end(), enclosed.begin(), enclosed.end());
-        }
-        i = loop_end;
+        sum_lat += track[i].lat;
     }
+    const double mean_lat = sum_lat / static_cast<double>(end_idx - start_idx + 1);
+
+    const double rad_lat = mean_lat * g_DegToRad;
+    const double meters_per_deg_lat = g_DegToRad * g_EarthRadiusMeters;
+    const double meters_per_deg_lon = meters_per_deg_lat * std::cos(rad_lat);
+
+    const double ref_lat = track[start_idx].lat;
+    const double ref_lon = track[start_idx].lon;
+
+    double area = 0.0;
+    const std::size_t count = end_idx - start_idx + 1;
+    for (std::size_t k = 0; k < count; ++k)
+    {
+        const auto& p1 = track[start_idx + k];
+        const auto& p2 = track[start_idx + ((k + 1) % count)];
+
+        const double x1 = (p1.lon - ref_lon) * meters_per_deg_lon;
+        const double y1 = (p1.lat - ref_lat) * meters_per_deg_lat;
+        const double x2 = (p2.lon - ref_lon) * meters_per_deg_lon;
+        const double y2 = (p2.lat - ref_lat) * meters_per_deg_lat;
+
+        area += (x1 * y2 - x2 * y1);
+    }
+
+    return area * 0.5;
 }
 
-std::vector<H3IndexValue> H3CaptureResolver::FillLoop(const std::vector<PathPoint>& path, std::size_t start,
-                                                      std::size_t end) const
+std::vector<H3IndexValue> H3CaptureResolver::FillLoopPolygon(const std::vector<ProcessedPoint>& track,
+                                                             std::size_t start_idx, std::size_t end_idx,
+                                                             double signed_area) const
 {
-    if (end <= start + 2)
+    if (end_idx <= start_idx + 2)
     {
         return {};
     }
 
     std::vector<LatLng> loop_verts;
-    loop_verts.reserve((end - start + 1) + 1);
+    loop_verts.reserve(end_idx - start_idx + 1);
 
-    for (std::size_t i = start; i <= end; ++i)
+    for (std::size_t i = start_idx; i <= end_idx; ++i)
     {
-        loop_verts.push_back({degsToRads(path[i].lat), degsToRads(path[i].lon)});
+        LatLng ll{.lat = degsToRads(track[i].lat), .lng = degsToRads(track[i].lon)};
+
+        if (!loop_verts.empty() && std::abs(loop_verts.back().lat - ll.lat) < g_CoordEpsilon &&
+            std::abs(loop_verts.back().lng - ll.lng) < g_CoordEpsilon)
+        {
+            continue;
+        }
+
+        loop_verts.push_back(ll);
     }
 
-    if (loop_verts.front().lat != loop_verts.back().lat || loop_verts.front().lng != loop_verts.back().lng)
+    while (loop_verts.size() > 2 && std::abs(loop_verts.back().lat - loop_verts.front().lat) < g_CoordEpsilon &&
+           std::abs(loop_verts.back().lng - loop_verts.front().lng) < g_CoordEpsilon)
     {
-        loop_verts.push_back(loop_verts.front());
+        loop_verts.pop_back();
+    }
+
+    if (loop_verts.size() < 3)
+    {
+        return {};
+    }
+
+    if (signed_area < 0.0)
+    {
+        std::reverse(loop_verts.begin(), loop_verts.end());
     }
 
     GeoLoop outer_loop;
@@ -203,6 +249,112 @@ std::vector<H3IndexValue> H3CaptureResolver::FillLoop(const std::vector<PathPoin
     polygon.holes = nullptr;
 
     return m_h3_service.PolygonToHexagons(polygon);
+}
+
+void H3CaptureResolver::DetectAndFillLoops(const std::vector<ProcessedPoint>& track,
+                                           std::vector<H3IndexValue>& out_enclosed) const
+{
+    if (!m_config.enable_loop_capture || track.size() < 6)
+    {
+        return;
+    }
+
+    std::unordered_map<H3IndexValue, std::vector<std::size_t>> hex_to_indices;
+    hex_to_indices.reserve(track.size());
+
+    std::size_t window_start = 0;
+
+    for (std::size_t j = 0; j < track.size(); ++j)
+    {
+        const auto& pt_j = track[j];
+
+        std::optional<std::size_t> best_start_idx;
+        double best_signed_area = 0.0;
+
+        auto test_candidate = [&](std::size_t cand_idx) -> bool
+        {
+            if (cand_idx < window_start || j <= cand_idx + 2)
+            {
+                return false;
+            }
+
+            const double path_dist = pt_j.cum_distance - track[cand_idx].cum_distance;
+            if (path_dist < m_config.min_loop_perimeter_meters)
+            {
+                return false;
+            }
+
+            const double closure_dist =
+                H3Service::GetDistanceMeters(track[cand_idx].lat, track[cand_idx].lon, pt_j.lat, pt_j.lon);
+            if (closure_dist > m_config.max_loop_closure_distance_meters)
+            {
+                return false;
+            }
+
+            const bool is_same_hex = (pt_j.hex == track[cand_idx].hex);
+            if (!is_same_hex &&
+                (closure_dist > g_MaxNeighborClosureMeters || path_dist < g_MinLoopRatio * closure_dist))
+            {
+                return false;
+            }
+
+            const double signed_area = CalculateSignedPolygonAreaM2(track, cand_idx, j);
+            if (std::abs(signed_area) < m_config.min_loop_area_m2)
+            {
+                return false;
+            }
+
+            best_start_idx = cand_idx;
+            best_signed_area = signed_area;
+            return true;
+        };
+
+        if (auto it = hex_to_indices.find(pt_j.hex); it != hex_to_indices.end())
+        {
+            for (const auto cand_idx : it->second)
+            {
+                if (test_candidate(cand_idx))
+                {
+                    break;
+                }
+            }
+        }
+
+        if (!best_start_idx.has_value())
+        {
+            const auto neighbors = m_h3_service.GetHexagonsInRadius(pt_j.hex, 1);
+            for (const auto n_hex : neighbors)
+            {
+                if (n_hex == pt_j.hex)
+                {
+                    continue;
+                }
+                if (auto it = hex_to_indices.find(n_hex); it != hex_to_indices.end())
+                {
+                    for (const auto cand_idx : it->second)
+                    {
+                        if (test_candidate(cand_idx))
+                        {
+                            break;
+                        }
+                    }
+                }
+                if (best_start_idx.has_value())
+                {
+                    break;
+                }
+            }
+        }
+
+        if (best_start_idx.has_value())
+        {
+            auto filled = FillLoopPolygon(track, *best_start_idx, j, best_signed_area);
+            out_enclosed.insert(out_enclosed.end(), filled.begin(), filled.end());
+            window_start = j;
+        }
+
+        hex_to_indices[pt_j.hex].push_back(j);
+    }
 }
 
 } // namespace run::domain::h3
