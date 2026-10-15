@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gameplay/geo_point.hpp"
 #include <h3/h3api.h>
 
 #include <cstdint>
@@ -7,16 +8,11 @@
 #include <string>
 #include <vector>
 
-namespace run::domain::h3
+namespace run::gameplay::territory_conquest
 {
 
 using H3IndexValue = uint64_t;
-
-struct GeoCoordinates
-{
-    double latitude{0.0};  ///< Latitude in degrees [-90, 90]
-    double longitude{0.0}; ///< Longitude in degrees [-180, 180]
-};
+using GeoCoordinates = gameplay::GeoPoint;
 
 struct BoundingBox
 {
@@ -26,7 +22,7 @@ struct BoundingBox
 
 struct H3Config
 {
-    int default_resolution{9}; ///< H3 resolution level (Res 9 ~100m edge length)
+    int default_resolution{9}; ///< H3 Resolution 9 (~100m edge length)
 };
 
 class H3Service
@@ -69,4 +65,4 @@ private:
     H3Config m_config;
 };
 
-} // namespace run::domain::h3
+} // namespace run::gameplay::territory_conquest

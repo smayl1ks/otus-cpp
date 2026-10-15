@@ -4,6 +4,7 @@ CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE TABLE IF NOT EXISTS runs (
     id                     BIGSERIAL PRIMARY KEY,
     user_id                BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    session_id VARCHAR(64) UNIQUE NOT NULL,
     status                 VARCHAR(20) NOT NULL DEFAULT 'active' 
                            CHECK (status IN ('active', 'finished', 'cancelled')),
 

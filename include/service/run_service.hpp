@@ -1,9 +1,9 @@
 #pragma once
 
-#include "domain/gps_anticheat.hpp"
-#include "domain/h3_capture_resolver.hpp"
-#include "domain/h3_service.hpp"
-#include "domain/run_validator.hpp"
+#include "gameplay/anticheat/anticheat.hpp"
+#include "gameplay/territory_conquest/capture_resolver.hpp"
+#include "gameplay/territory_conquest/h3_service.hpp"
+#include "gameplay/workout_tracking/workout_session.hpp"
 
 #include "common.pb.h"
 #include "events.pb.h"
@@ -55,9 +55,9 @@ private:
     // std::shared_ptr<repository::IHexagonRepository> m_hex_repository;
     // std::shared_ptr<cache::IRedisCache> m_cache;
 
-    domain::anticheat::GpsAntiCheat m_anticheat;
-    domain::validator::RunValidator m_run_validator;
-    domain::h3::H3Service m_h3_service;
+    gameplay::anticheat::GpsAntiCheat m_anticheat;
+    gameplay::workout_tracking::RunValidator m_run_validator;
+    gameplay::territory_conquest::H3Service m_h3_service;
 };
 
 } // namespace run::service

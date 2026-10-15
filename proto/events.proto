@@ -23,7 +23,7 @@ enum FinishRunRejectReason {
 // Request payload to initialize a new running session.
 message StartRunRequest {
   string session_id = 1;      // Client generated UUIDv4 for idempotency and trace tracking.
-  uint32 faction_id = 2;      // Active faction ID selected for territory capture.
+  int64 team_id = 2;          // Active faction ID selected for territory capture.
   int64 start_timestamp = 3;  // Device epoch time in milliseconds when user tapped "start".
 }
 

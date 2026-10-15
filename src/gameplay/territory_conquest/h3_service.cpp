@@ -1,10 +1,10 @@
-#include "domain/h3_service.hpp"
+#include "gameplay/territory_conquest/h3_service.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <unordered_set>
 
-namespace run::domain::h3
+namespace run::gameplay::territory_conquest
 {
 
 H3Service::H3Service(H3Config config) noexcept : m_config(config)
@@ -13,7 +13,7 @@ H3Service::H3Service(H3Config config) noexcept : m_config(config)
 
 bool H3Service::IsValid(H3IndexValue cell) noexcept
 {
-    return isValidCell(cell) != 0; // isValidCell provided by <h3/h3api.h>
+    return isValidCell(cell) != 0;
 }
 
 std::optional<H3IndexValue> H3Service::PointToH3(double latitude, double longitude, int resolution) const noexcept
@@ -245,7 +245,6 @@ std::optional<H3IndexValue> H3Service::FromString(const std::string& h3_str) noe
 std::vector<H3IndexValue> H3Service::PolygonToHexagons(const GeoPolygon& polygon) const noexcept
 {
     int64_t max_cells = 0;
-
     const int resolution = m_config.default_resolution;
 
     if (maxPolygonToCellsSize(&polygon, resolution, 0, &max_cells) != E_SUCCESS || max_cells <= 0)
@@ -263,4 +262,4 @@ std::vector<H3IndexValue> H3Service::PolygonToHexagons(const GeoPolygon& polygon
     return cells;
 }
 
-} // namespace run::domain::h3
+} // namespace run::gameplay::territory_conquest

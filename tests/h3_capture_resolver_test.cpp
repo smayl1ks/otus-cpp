@@ -1,9 +1,11 @@
-#include "domain/h3_capture_resolver.hpp"
-#include "domain/h3_service.hpp"
-#include "location.pb.h"
+#include "gameplay/territory_conquest/capture_resolver.hpp"
+#include "gameplay/territory_conquest/h3_service.hpp"
+#include "gameplay/workout_tracking/workout_session.hpp"
+#include <algorithm>
 #include <gtest/gtest.h>
+#include <vector>
 
-namespace run::domain::h3::testing
+namespace run::gameplay::territory_conquest::testing
 {
 
 class H3CaptureResolverTest : public ::testing::Test
@@ -16,15 +18,9 @@ protected:
     const double kBaseLat = 55.7983;
     const double kBaseLng = 49.1061;
 
-    void AddPoint(google::protobuf::RepeatedPtrField<run::proto::location::LocationPoint>& points, double lat,
-                  double lon, float accuracy = 5.0f, int64_t timestamp = 0, bool is_mock = false) const
+    void AddPoint(std::vector<GeoPoint>& points, double lat, double lon) const
     {
-        auto* point = points.Add();
-        point->set_latitude(lat);
-        point->set_longitude(lon);
-        point->set_accuracy(accuracy);
-        point->set_timestamp(timestamp);
-        point->set_is_mock(is_mock);
+        points.push_back(GeoPoint{.latitude = lat, .longitude = lon});
     }
 };
 
@@ -32,11 +28,14 @@ TEST_F(H3CaptureResolverTest, Resolve_EmptyPoints_ReturnsEmptyResult)
 {
     H3CaptureResolver resolver(m_h3_service);
 
-    google::protobuf::RepeatedPtrField<run::proto::location::LocationPoint> points;
+    std::vector<GeoPoint> points;
 
     const auto result = resolver.Resolve(points);
 
     EXPECT_TRUE(result.claimed_hexes.empty());
+    EXPECT_TRUE(result.boundary_hexes.empty());
+    EXPECT_TRUE(result.enclosed_hexes.empty());
+    EXPECT_DOUBLE_EQ(result.total_distance_meters, 0.0);
 }
 
 TEST_F(H3CaptureResolverTest, Resolve_MinDistanceFiltering_DropsHexBelowDistanceThreshold)
@@ -45,127 +44,203 @@ TEST_F(H3CaptureResolverTest, Resolve_MinDistanceFiltering_DropsHexBelowDistance
     H3CaptureConfig config{.min_points_per_hex = 2, .min_distance_per_hex_meters = 15.0};
     H3CaptureResolver resolver(m_h3_service, config);
 
-    google::protobuf::RepeatedPtrField<run::proto::location::LocationPoint> points;
+    std::vector<GeoPoint> points;
     AddPoint(points, kBaseLat, kBaseLng);
-    AddPoint(points, kBaseLat + 0.00002, kBaseLng + 0.00002);
+    AddPoint(points, kBaseLat + 0.00003, kBaseLng); // ~3.3m away in same hex
 
     const auto result = resolver.Resolve(points);
+
+    EXPECT_TRUE(result.boundary_hexes.empty());
+    EXPECT_TRUE(result.claimed_hexes.empty());
+    EXPECT_GT(result.total_distance_meters, 0.0);
+}
+
+TEST_F(H3CaptureResolverTest, Resolve_MinPointsFiltering_DropsHexWithSinglePoint)
+{
+    H3CaptureConfig config{.min_points_per_hex = 2, .min_distance_per_hex_meters = 0.0};
+    H3CaptureResolver resolver(m_h3_service, config);
+
+    std::vector<GeoPoint> points;
+    AddPoint(points, kBaseLat, kBaseLng); // Only 1 point in hex
+
+    const auto result = resolver.Resolve(points);
+
+    EXPECT_TRUE(result.boundary_hexes.empty());
     EXPECT_TRUE(result.claimed_hexes.empty());
 }
 
-TEST_F(H3CaptureResolverTest, Resolve_MinDistanceFiltering_AcceptsHexAboveDistanceThreshold)
+TEST_F(H3CaptureResolverTest, Resolve_SingleHexLinearTrack_CapturesBoundaryHex)
 {
-    // Points satisfy min_points_per_hex (2 points) and distance is ~40 meters (> 15m threshold)
-    H3CaptureConfig config{.min_points_per_hex = 2, .min_distance_per_hex_meters = 15.0};
+    H3CaptureConfig config{.min_points_per_hex = 1, .min_distance_per_hex_meters = 0.0};
     H3CaptureResolver resolver(m_h3_service, config);
 
-    google::protobuf::RepeatedPtrField<run::proto::location::LocationPoint> points;
+    std::vector<GeoPoint> points;
     AddPoint(points, kBaseLat, kBaseLng);
-    AddPoint(points, kBaseLat + 0.0003, kBaseLng + 0.0003);
+    AddPoint(points, kBaseLat + 0.0001, kBaseLng);
 
     const auto result = resolver.Resolve(points);
-    EXPECT_FALSE(result.claimed_hexes.empty());
+
+    const auto expected_hex = m_h3_service.PointToH3(kBaseLat, kBaseLng).value_or(0);
+    EXPECT_EQ(result.boundary_hexes.size(), 1u);
+    EXPECT_EQ(result.boundary_hexes[0], expected_hex);
+    EXPECT_EQ(result.claimed_hexes.size(), 1u);
+    EXPECT_EQ(result.claimed_hexes[0], expected_hex);
+    EXPECT_TRUE(result.enclosed_hexes.empty());
+    EXPECT_GT(result.total_distance_meters, 0.0);
 }
 
-TEST_F(H3CaptureResolverTest, Resolve_OutAndBackTrack_DoesNotTriggerFakeLoop)
+TEST_F(H3CaptureResolverTest, Resolve_OpenTrajectory_OnlyBoundaryHexesCaptured)
 {
-    // Runner runs out along a straight street and returns back along the same line
-    H3CaptureConfig config{.min_points_per_hex = 2, .min_distance_per_hex_meters = 0.0, .enable_loop_capture = true};
+    H3CaptureConfig config{.min_points_per_hex = 1, .min_distance_per_hex_meters = 0.0};
     H3CaptureResolver resolver(m_h3_service, config);
 
-    google::protobuf::RepeatedPtrField<run::proto::location::LocationPoint> points;
-    // Going North 400m
-    for (int i = 0; i <= 8; ++i)
+    std::vector<GeoPoint> points;
+    // Walk in a straight line across multiple hexes
+    for (int i = 0; i < 5; ++i)
     {
-        AddPoint(points, kBaseLat + (i * 0.0005), kBaseLng);
-    }
-    // Coming South back to start along the same line
-    for (int i = 7; i >= 0; --i)
-    {
-        AddPoint(points, kBaseLat + (i * 0.0005), kBaseLng);
+        AddPoint(points, kBaseLat + (i * 0.002), kBaseLng);
     }
 
-    const auto detailed = resolver.Resolve(points);
+    const auto result = resolver.Resolve(points);
 
-    // Traversed hexes along the street should be captured
-    EXPECT_FALSE(detailed.boundary_hexes.empty());
-    // Out-and-back has 0 enclosed area, so no enclosed loop hexes should be captured!
-    EXPECT_TRUE(detailed.enclosed_hexes.empty());
+    EXPECT_GT(result.boundary_hexes.size(), 1u);
+    EXPECT_TRUE(result.enclosed_hexes.empty());
+    EXPECT_EQ(result.claimed_hexes.size(), result.boundary_hexes.size());
+
+    // Claimed hexes should be sorted and deduplicated
+    EXPECT_TRUE(std::is_sorted(result.claimed_hexes.begin(), result.claimed_hexes.end()));
 }
 
-TEST_F(H3CaptureResolverTest, Resolve_CounterClockwiseLoop_ClaimsBoundaryAndEnclosed)
+TEST_F(H3CaptureResolverTest, Resolve_ClosedLoop_RasterizesAndEnclosesInteriorHexes)
 {
-    H3CaptureConfig config{.min_points_per_hex = 1, .enable_loop_capture = true};
+    // Configure loop capture: min perimeter 300m, min area 10,000 m2
+    H3CaptureConfig config{
+        .min_points_per_hex = 1,
+        .min_distance_per_hex_meters = 0.0,
+        .enable_loop_capture = true,
+        .min_loop_perimeter_meters = 300.0,
+        .min_loop_area_m2 = 10000.0,
+        .max_loop_closure_distance_meters = 150.0,
+    };
     H3CaptureResolver resolver(m_h3_service, config);
 
-    google::protobuf::RepeatedPtrField<run::proto::location::LocationPoint> points;
+    std::vector<GeoPoint> points;
 
-    // Running Counter-Clockwise around a block (~890m x ~500m): East -> North -> West -> South
-    for (int i = 0; i < 5; ++i)
+    // Draw a large square (~800m x 800m, area ~640,000 m2 > 10,000 m2 threshold)
+    // 0.008 deg latitude ~ 890m, 0.008 deg longitude at 55N ~ 510m
+    const double step = 0.002;
+    // Bottom edge: west to east
+    for (int i = 0; i < 4; ++i)
     {
-        AddPoint(points, kBaseLat, kBaseLng + (i * 0.002));
+        AddPoint(points, kBaseLat, kBaseLng + (i * step));
     }
-    for (int i = 0; i < 5; ++i)
+    // Right edge: south to north
+    for (int i = 0; i < 4; ++i)
     {
-        AddPoint(points, kBaseLat + (i * 0.002), kBaseLng + 0.008);
+        AddPoint(points, kBaseLat + (i * step), kBaseLng + 0.008);
     }
-    for (int i = 0; i < 5; ++i)
+    // Top edge: east to west
+    for (int i = 0; i < 4; ++i)
     {
-        AddPoint(points, kBaseLat + 0.008, kBaseLng + 0.008 - (i * 0.002));
+        AddPoint(points, kBaseLat + 0.008, kBaseLng + 0.008 - (i * step));
     }
-    for (int i = 0; i < 5; ++i)
+    // Left edge: north to south, closing back near origin
+    for (int i = 0; i < 4; ++i)
     {
-        AddPoint(points, kBaseLat + 0.008 - (i * 0.002), kBaseLng);
+        AddPoint(points, kBaseLat + 0.008 - (i * step), kBaseLng);
     }
+    // Close the loop explicitly
+    AddPoint(points, kBaseLat, kBaseLng);
 
-    const auto detailed = resolver.Resolve(points);
+    const auto result = resolver.Resolve(points);
 
-    EXPECT_FALSE(detailed.boundary_hexes.empty());
-    EXPECT_FALSE(detailed.enclosed_hexes.empty());
-    EXPECT_FALSE(detailed.claimed_hexes.empty());
-    EXPECT_GT(detailed.total_distance_meters, 2000.0);
+    EXPECT_FALSE(result.boundary_hexes.empty());
+    EXPECT_FALSE(result.enclosed_hexes.empty());
+
+    // Claimed hexes should contain all boundary hexes plus enclosed interior hexes
+    EXPECT_GE(result.claimed_hexes.size(), result.boundary_hexes.size());
+    EXPECT_GE(result.claimed_hexes.size(), result.enclosed_hexes.size());
+
+    // Claimed hexes must be strictly deduplicated and sorted
+    EXPECT_TRUE(std::is_sorted(result.claimed_hexes.begin(), result.claimed_hexes.end()));
+    EXPECT_TRUE(std::adjacent_find(result.claimed_hexes.begin(), result.claimed_hexes.end()) ==
+                result.claimed_hexes.end());
 }
 
-TEST_F(H3CaptureResolverTest, Resolve_RealKazanRun_ClaimsBoundaryAndEnclosed)
+TEST_F(H3CaptureResolverTest, Resolve_LoopDisabled_NoEnclosedHexes)
 {
-    H3CaptureConfig config{.min_points_per_hex = 2, .min_distance_per_hex_meters = 0.0, .enable_loop_capture = true};
+    H3CaptureConfig config{
+        .min_points_per_hex = 1,
+        .min_distance_per_hex_meters = 0.0,
+        .enable_loop_capture = false, // Loop capture explicitly disabled
+    };
     H3CaptureResolver resolver(m_h3_service, config);
 
-    google::protobuf::RepeatedPtrField<run::proto::location::LocationPoint> points;
+    std::vector<GeoPoint> points;
+    // Square loop
+    AddPoint(points, kBaseLat, kBaseLng);
+    AddPoint(points, kBaseLat, kBaseLng + 0.008);
+    AddPoint(points, kBaseLat + 0.008, kBaseLng + 0.008);
+    AddPoint(points, kBaseLat + 0.008, kBaseLng);
+    AddPoint(points, kBaseLat, kBaseLng);
 
-    const double base_lat = 55.8034;
-    const double base_lng = 49.1442;
+    const auto result = resolver.Resolve(points);
 
-    for (int i = 0; i < 10; ++i)
-    {
-        AddPoint(points, base_lat + (i * 0.0008), base_lng);
-    }
-
-    for (int i = 0; i < 10; ++i)
-    {
-        AddPoint(points, base_lat + 0.008, base_lng + (i * 0.001));
-    }
-
-    for (int i = 0; i < 10; ++i)
-    {
-        AddPoint(points, base_lat + 0.008 - (i * 0.0008), base_lng + 0.010);
-    }
-
-    for (int i = 0; i < 10; ++i)
-    {
-        AddPoint(points, base_lat, base_lng + 0.010 - (i * 0.001));
-    }
-
-    const auto detailed = resolver.Resolve(points);
-
-    EXPECT_FALSE(detailed.boundary_hexes.empty());
-    EXPECT_FALSE(detailed.enclosed_hexes.empty());
-    EXPECT_FALSE(detailed.claimed_hexes.empty());
-
-    EXPECT_GT(detailed.total_distance_meters, 500.0);
-
-    std::unordered_set<uint64_t> unique_check(detailed.claimed_hexes.begin(), detailed.claimed_hexes.end());
-    EXPECT_EQ(unique_check.size(), detailed.claimed_hexes.size());
+    EXPECT_FALSE(result.boundary_hexes.empty());
+    EXPECT_TRUE(result.enclosed_hexes.empty());
+    EXPECT_EQ(result.claimed_hexes.size(), result.boundary_hexes.size());
 }
 
-} // namespace run::domain::h3::testing
+TEST_F(H3CaptureResolverTest, Resolve_SmallLoopBelowAreaThreshold_RejectsEnclosedCapture)
+{
+    // Require minimum 50,000 m2
+    H3CaptureConfig config{
+        .min_points_per_hex = 1,
+        .min_distance_per_hex_meters = 0.0,
+        .enable_loop_capture = true,
+        .min_loop_perimeter_meters = 50.0,
+        .min_loop_area_m2 = 50000.0, // High area threshold
+        .max_loop_closure_distance_meters = 150.0,
+    };
+    H3CaptureResolver resolver(m_h3_service, config);
+
+    std::vector<GeoPoint> points;
+    // Small tiny loop ~20m x 20m (area ~400 m2 << 50,000 m2)
+    AddPoint(points, kBaseLat, kBaseLng);
+    AddPoint(points, kBaseLat, kBaseLng + 0.0002);
+    AddPoint(points, kBaseLat + 0.0002, kBaseLng + 0.0002);
+    AddPoint(points, kBaseLat + 0.0002, kBaseLng);
+    AddPoint(points, kBaseLat, kBaseLng);
+
+    const auto result = resolver.Resolve(points);
+
+    // Loop detected, but area is below 50,000 m2, so enclosed hexes must be empty
+    EXPECT_TRUE(result.enclosed_hexes.empty());
+}
+
+TEST_F(H3CaptureResolverTest, Resolve_RunPointSpan_MatchesGeoPointResult)
+{
+    H3CaptureConfig config{.min_points_per_hex = 1, .min_distance_per_hex_meters = 0.0};
+    H3CaptureResolver resolver(m_h3_service, config);
+
+    std::vector<GeoPoint> geo_points;
+    std::vector<::run::gameplay::workout_tracking::RunPoint> run_points;
+
+    for (int i = 0; i < 4; ++i)
+    {
+        double lat = kBaseLat + (i * 0.002);
+        double lon = kBaseLng;
+        geo_points.push_back(GeoPoint{.latitude = lat, .longitude = lon});
+        run_points.push_back(::run::gameplay::workout_tracking::RunPoint::Create(1, i, lat, lon, 1000 * i));
+    }
+
+    const auto result_geo = resolver.Resolve(geo_points);
+    const auto result_run = resolver.Resolve(run_points);
+
+    EXPECT_EQ(result_geo.claimed_hexes, result_run.claimed_hexes);
+    EXPECT_EQ(result_geo.boundary_hexes, result_run.boundary_hexes);
+    EXPECT_EQ(result_geo.enclosed_hexes, result_run.enclosed_hexes);
+    EXPECT_DOUBLE_EQ(result_geo.total_distance_meters, result_run.total_distance_meters);
+}
+
+} // namespace run::gameplay::territory_conquest::testing

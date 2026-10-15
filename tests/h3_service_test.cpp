@@ -1,11 +1,11 @@
-#include "domain/h3_service.hpp"
+#include "gameplay/territory_conquest/h3_service.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <gtest/gtest.h>
 #include <unordered_set>
 
-namespace run::domain::h3::testing
+namespace run::gameplay::territory_conquest::testing
 {
 
 class H3ServiceTest : public ::testing::Test
@@ -253,4 +253,4 @@ TEST_F(H3ServiceTest, PolygonToCells_BasicSquare)
     }
 }
 
-} // namespace run::domain::h3::testing
+} // namespace run::gameplay::territory_conquest::testing
