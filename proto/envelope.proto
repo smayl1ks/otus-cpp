@@ -4,6 +4,7 @@ package run.proto;
 
 import "location.proto";
 import "events.proto";
+import "gamemap.proto";
 
 // Common message envelope for multiplexing WebSocket streams
 message Envelope {
@@ -14,12 +15,19 @@ message Envelope {
   oneof payload {
     // Location batching telemetry
     location.LocationBatch location_batch = 10;
-    location.LocationBatchAck location_batch_ack = 11;
 
-    // Session lifecycle events
+    // Running session lifecycle events
     events.StartRunRequest start_run_request = 20;
     events.StartRunResponse start_run_response = 21;
     events.FinishRunRequest finish_run_request = 22;
     events.FinishRunResponse finish_run_response = 23;
+    events.BatchProcessResponse batch_process_response = 24;
+
+    // Gamemap events
+    gamemap.SubscribeViewportRequest subscribe_viewport_request = 30;
+    gamemap.SubscribeViewportResponse subscribe_viewport_response = 31;
+    gamemap.HexagonCaptureEvent hexagon_capture_event = 32;
+    
+    gamemap.RadarPing radar_ping = 33;
   }
 }

@@ -33,8 +33,6 @@ TEST_F(H3CaptureResolverTest, Resolve_EmptyPoints_ReturnsEmptyResult)
     const auto result = resolver.Resolve(points);
 
     EXPECT_TRUE(result.claimed_hexes.empty());
-    EXPECT_TRUE(result.boundary_hexes.empty());
-    EXPECT_TRUE(result.enclosed_hexes.empty());
     EXPECT_DOUBLE_EQ(result.total_distance_meters, 0.0);
 }
 
@@ -50,7 +48,6 @@ TEST_F(H3CaptureResolverTest, Resolve_MinDistanceFiltering_DropsHexBelowDistance
 
     const auto result = resolver.Resolve(points);
 
-    EXPECT_TRUE(result.boundary_hexes.empty());
     EXPECT_TRUE(result.claimed_hexes.empty());
     EXPECT_GT(result.total_distance_meters, 0.0);
 }
@@ -65,7 +62,6 @@ TEST_F(H3CaptureResolverTest, Resolve_MinPointsFiltering_DropsHexWithSinglePoint
 
     const auto result = resolver.Resolve(points);
 
-    EXPECT_TRUE(result.boundary_hexes.empty());
     EXPECT_TRUE(result.claimed_hexes.empty());
 }
 
@@ -81,11 +77,8 @@ TEST_F(H3CaptureResolverTest, Resolve_SingleHexLinearTrack_CapturesBoundaryHex)
     const auto result = resolver.Resolve(points);
 
     const auto expected_hex = m_h3_service.PointToH3(kBaseLat, kBaseLng).value_or(0);
-    EXPECT_EQ(result.boundary_hexes.size(), 1u);
-    EXPECT_EQ(result.boundary_hexes[0], expected_hex);
     EXPECT_EQ(result.claimed_hexes.size(), 1u);
     EXPECT_EQ(result.claimed_hexes[0], expected_hex);
-    EXPECT_TRUE(result.enclosed_hexes.empty());
     EXPECT_GT(result.total_distance_meters, 0.0);
 }
 
@@ -103,9 +96,7 @@ TEST_F(H3CaptureResolverTest, Resolve_OpenTrajectory_OnlyBoundaryHexesCaptured)
 
     const auto result = resolver.Resolve(points);
 
-    EXPECT_GT(result.boundary_hexes.size(), 1u);
-    EXPECT_TRUE(result.enclosed_hexes.empty());
-    EXPECT_EQ(result.claimed_hexes.size(), result.boundary_hexes.size());
+    EXPECT_GT(result.claimed_hexes.size(), 1u);
 
     // Claimed hexes should be sorted and deduplicated
     EXPECT_TRUE(std::is_sorted(result.claimed_hexes.begin(), result.claimed_hexes.end()));
@@ -154,12 +145,8 @@ TEST_F(H3CaptureResolverTest, Resolve_ClosedLoop_RasterizesAndEnclosesInteriorHe
 
     const auto result = resolver.Resolve(points);
 
-    EXPECT_FALSE(result.boundary_hexes.empty());
-    EXPECT_FALSE(result.enclosed_hexes.empty());
-
-    // Claimed hexes should contain all boundary hexes plus enclosed interior hexes
-    EXPECT_GE(result.claimed_hexes.size(), result.boundary_hexes.size());
-    EXPECT_GE(result.claimed_hexes.size(), result.enclosed_hexes.size());
+    EXPECT_FALSE(result.claimed_hexes.empty());
+    EXPECT_GT(result.total_distance_meters, 0.0);
 
     // Claimed hexes must be strictly deduplicated and sorted
     EXPECT_TRUE(std::is_sorted(result.claimed_hexes.begin(), result.claimed_hexes.end()));
@@ -186,9 +173,8 @@ TEST_F(H3CaptureResolverTest, Resolve_LoopDisabled_NoEnclosedHexes)
 
     const auto result = resolver.Resolve(points);
 
-    EXPECT_FALSE(result.boundary_hexes.empty());
-    EXPECT_TRUE(result.enclosed_hexes.empty());
-    EXPECT_EQ(result.claimed_hexes.size(), result.boundary_hexes.size());
+    EXPECT_FALSE(result.claimed_hexes.empty());
+    EXPECT_TRUE(std::is_sorted(result.claimed_hexes.begin(), result.claimed_hexes.end()));
 }
 
 TEST_F(H3CaptureResolverTest, Resolve_SmallLoopBelowAreaThreshold_RejectsEnclosedCapture)
@@ -214,8 +200,13 @@ TEST_F(H3CaptureResolverTest, Resolve_SmallLoopBelowAreaThreshold_RejectsEnclose
 
     const auto result = resolver.Resolve(points);
 
-    // Loop detected, but area is below 50,000 m2, so enclosed hexes must be empty
-    EXPECT_TRUE(result.enclosed_hexes.empty());
+    // Loop detected, but area is below 50,000 m2, so only boundary hexes are captured
+    H3CaptureConfig no_loop_config = config;
+    no_loop_config.enable_loop_capture = false;
+    H3CaptureResolver no_loop_resolver(m_h3_service, no_loop_config);
+    const auto no_loop_result = no_loop_resolver.Resolve(points);
+
+    EXPECT_EQ(result.claimed_hexes.size(), no_loop_result.claimed_hexes.size());
 }
 
 TEST_F(H3CaptureResolverTest, Resolve_RunPointSpan_MatchesGeoPointResult)
@@ -238,8 +229,6 @@ TEST_F(H3CaptureResolverTest, Resolve_RunPointSpan_MatchesGeoPointResult)
     const auto result_run = resolver.Resolve(run_points);
 
     EXPECT_EQ(result_geo.claimed_hexes, result_run.claimed_hexes);
-    EXPECT_EQ(result_geo.boundary_hexes, result_run.boundary_hexes);
-    EXPECT_EQ(result_geo.enclosed_hexes, result_run.enclosed_hexes);
     EXPECT_DOUBLE_EQ(result_geo.total_distance_meters, result_run.total_distance_meters);
 }
 

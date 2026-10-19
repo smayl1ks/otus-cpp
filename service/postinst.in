@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+SERVICE_FILE="/lib/systemd/system/@SERVICE_NAME@.service"
+
+if [ -f "$SERVICE_FILE" ] && grep -q "RUNNER_ROOT_PASSWORD=GENERATED_PLACEHOLDER" "$SERVICE_FILE"; then
+    NEW_PASSWORD=$(openssl rand -hex 16)
+    sed -i "s/RUNNER_ROOT_PASSWORD=GENERATED_PLACEHOLDER/RUNNER_ROOT_PASSWORD=$NEW_PASSWORD/g" "$SERVICE_FILE"
+fi
+
+if [ ! -f /etc/@SERVICE_NAME@/runner.cfg ]; then
+    cp /etc/@SERVICE_NAME@/runner.cfg.default /etc/@SERVICE_NAME@/runner.cfg
+fi
+
+systemctl daemon-reload
+systemctl enable @SERVICE_NAME@.service
+systemctl start @SERVICE_NAME@.service
+
+echo "@SERVICE_NAME@ installed"

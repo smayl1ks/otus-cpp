@@ -1,7 +1,7 @@
 #pragma once
 
 #include <boost/lockfree/queue.hpp>
-#include <memory>
+#include <utility>
 
 namespace run::storage
 {
@@ -10,7 +10,7 @@ template <typename T>
 class InMemoryLockFreeBuffer
 {
 public:
-    using ElementPtr = std::shared_ptr<T>;
+    using ValueType = T;
 
     explicit InMemoryLockFreeBuffer(std::size_t capacity = 8192) : m_queue(capacity)
     {
@@ -23,12 +23,17 @@ public:
     InMemoryLockFreeBuffer(InMemoryLockFreeBuffer&&) = delete;
     InMemoryLockFreeBuffer& operator=(InMemoryLockFreeBuffer&&) = delete;
 
-    bool Push(ElementPtr item) noexcept
+    bool Push(const T& item) noexcept
+    {
+        return m_queue.push(item);
+    }
+
+    bool Push(T&& item) noexcept
     {
         return m_queue.push(std::move(item));
     }
 
-    bool Pop(ElementPtr& out_item) noexcept
+    bool Pop(T& out_item) noexcept
     {
         return m_queue.pop(out_item);
     }
@@ -39,7 +44,7 @@ public:
     }
 
 private:
-    boost::lockfree::queue<ElementPtr> m_queue;
+    boost::lockfree::queue<T> m_queue;
 };
 
 } // namespace run::storage

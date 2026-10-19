@@ -1,0 +1,13 @@
+[Unit]
+Description=runner
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=@SERVICE_FOLDER@/@SERVICE_NAME@
+WorkingDirectory=@SERVICE_FOLDER@
+Restart=no
+Environment="RUNNER_ROOT_PASSWORD=GENERATED_PLACEHOLDER"
+
+[Install]
+WantedBy=multi-user.target

@@ -231,26 +231,21 @@ CaptureResult H3CaptureResolver::ResolveTrack(const std::vector<TrackPoint>& tra
     CaptureResult result;
     result.total_distance_meters = total_distance;
 
-    // 1. Qualify boundary hex visits (satisfying count and distance thresholds)
-    result.boundary_hexes = BoundaryQualifier::QualifyBoundaryHexes(track, m_config.min_points_per_hex,
-                                                                    m_config.min_distance_per_hex_meters);
+    result.claimed_hexes = BoundaryQualifier::QualifyBoundaryHexes(track, m_config.min_points_per_hex,
+                                                                   m_config.min_distance_per_hex_meters);
 
-    // 2. Closed loop detection and polygon rasterization
+    // Closed loop detection and polygon rasterization
     if (m_config.enable_loop_capture)
     {
         const auto closed_loops = m_loop_detector.DetectLoops(track);
         for (const auto& loop : closed_loops)
         {
             auto filled = PolygonRasterizer::RasterizeLoop(m_h3_service, track, loop);
-            result.enclosed_hexes.insert(result.enclosed_hexes.end(), filled.begin(), filled.end());
+            result.claimed_hexes.insert(result.claimed_hexes.end(), filled.begin(), filled.end());
         }
-        DeduplicateAndValidate(result.enclosed_hexes);
     }
 
-    // 3. Aggregate boundary + enclosed into total claimed
-    result.claimed_hexes.reserve(result.boundary_hexes.size() + result.enclosed_hexes.size());
-    result.claimed_hexes.insert(result.claimed_hexes.end(), result.boundary_hexes.begin(), result.boundary_hexes.end());
-    result.claimed_hexes.insert(result.claimed_hexes.end(), result.enclosed_hexes.begin(), result.enclosed_hexes.end());
+    // Single deduplication & validation step for all claimed hexes
     DeduplicateAndValidate(result.claimed_hexes);
 
     return result;

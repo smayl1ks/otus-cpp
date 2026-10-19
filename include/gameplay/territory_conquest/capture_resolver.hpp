@@ -60,10 +60,8 @@ struct H3CaptureConfig
  */
 struct CaptureResult
 {
-    std::vector<H3IndexValue> claimed_hexes;  ///< All claimed hexes (boundary + enclosed, deduplicated, sorted)
-    std::vector<H3IndexValue> boundary_hexes; ///< Hexes visited directly along trajectory (chronological)
-    std::vector<H3IndexValue> enclosed_hexes; ///< Hexes captured inside completed loops (deduplicated, sorted)
-    double total_distance_meters{0.0};        ///< Total valid distance covered
+    std::vector<H3IndexValue> claimed_hexes; ///< All claimed hexes (boundary + enclosed, deduplicated, sorted)
+    double total_distance_meters{0.0};       ///< Total valid distance covered
 };
 
 /**

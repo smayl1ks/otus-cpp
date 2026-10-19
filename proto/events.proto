@@ -20,11 +20,18 @@ enum FinishRunRejectReason {
   FINISH_REJECT_REASON_INSUFFICIENT_DATA = 3;   // Run rejected due to lack of valid GPS points.
 }
 
+enum VisibilityScope {
+    VISIBILITY_PRIVATE = 0;
+    VISIBILITY_TEAM_ONLY = 1;
+    VISIBILITY_PUBLIC = 2;
+}
+
 // Request payload to initialize a new running session.
 message StartRunRequest {
   string session_id = 1;      // Client generated UUIDv4 for idempotency and trace tracking.
   int64 team_id = 2;          // Active faction ID selected for territory capture.
-  int64 start_timestamp = 3;  // Device epoch time in milliseconds when user tapped "start".
+  VisibilityScope visibility = 3;
+  int64 start_timestamp = 4;  // Device epoch time in milliseconds when user tapped "start".
 }
 
 message StartRunResponse {
@@ -32,6 +39,14 @@ message StartRunResponse {
   StartRunRejectReason reject_reason = 2; // Business rejection reason if start failed.
   string session_id = 3;      // Confirmed workout session ID (UUIDv4).
   int64 server_start_timestamp = 4; // Server-validated epoch start time.
+}
+
+message BatchProcessResponse {
+  common.SystemStatus system_status = 1; // Transport/system RPC code.
+  common.AnticheatStatus anticheat_status = 2;
+  string session_id = 3;
+  string batch_uuid = 4;
+  int64 sequence_number = 5;
 }
 
 message FinishRunRequest {

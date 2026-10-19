@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package gamemap;
+
+import "common.proto";
+
+message SubscribeViewportRequest {
+  double south_west_lng = 1;
+  double south_west_lat = 2;
+  double north_east_lng = 3;
+  double north_east_lat = 4;
+}
+
+message ViewportHexagon {
+  uint64 h3_index = 1;
+  uint64 owner_user_id = 2;
+  string owner_username = 3;
+  string owner_color_hex = 4;
+  int32 score = 5;
+}
+
+message SubscribeViewportResponse {
+  common.Status status = 1;
+  repeated ViewportHexagon hexagons = 2;
+}
+
+message HexagonCaptureEvent {
+  uint64 h3_index = 1;
+  uint64 new_owner_id = 2;
+  string new_owner_name = 3;
+  string new_owner_color_hex = 4;
+  uint64 prev_owner_id = 5;
+  int32 score_at_capture = 6;
+  int64 timestamp = 7;
+}
+
+message RadarPing {
+    uint64 user_id = 1;
+    uint64 team_id = 2;
+    double latitude = 3;
+    double longitude = 4;
+    float speed = 5;
+    int64 timestamp = 6;
+}

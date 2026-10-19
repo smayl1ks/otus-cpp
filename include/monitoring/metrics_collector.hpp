@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <prometheus/counter.h>
 #include <prometheus/exposer.h>
 #include <prometheus/gauge.h>
@@ -45,6 +46,32 @@ public:
         m_latency_summary.Observe(latency_us);
     }
 
+    // --- Redis & Circuit Breaker Observability ---
+    void SetRedisCircuitState(std::size_t shard_id, double state)
+    {
+        m_redis_state_family.Add({{ "shard", std::to_string(shard_id) }}).Set(state);
+    }
+
+    void IncrementDroppedEvents(std::size_t shard_id, double count = 1.0)
+    {
+        m_redis_dropped_family.Add({{ "shard", std::to_string(shard_id) }}).Increment(count);
+    }
+
+    void IncrementDrainedEvents(std::size_t shard_id, double count = 1.0)
+    {
+        m_redis_drained_family.Add({{ "shard", std::to_string(shard_id) }}).Increment(count);
+    }
+
+    void IncrementDrainFailures(std::size_t shard_id, double count = 1.0)
+    {
+        m_redis_drain_failures_family.Add({{ "shard", std::to_string(shard_id) }}).Increment(count);
+    }
+
+    void IncrementSentinelFailover(const std::string& master_name)
+    {
+        m_redis_failovers_family.Add({{ "master", master_name }}).Increment();
+    }
+
 private:
     MetricsCollector()
         : m_registry(std::make_shared<prometheus::Registry>()),
@@ -72,8 +99,29 @@ private:
                                .Help("Resolution latency in microseconds")
                                .Register(*m_registry)),
           m_latency_summary(m_latency_family.Add({}, prometheus::Summary::Quantiles{
-                                                         {0.5, 0.05}, {0.9, 0.01}, {0.99, 0.001} // p50, p90, p99
-                                                     }))
+                                                         {0.5, 0.05}, {0.9, 0.01}, {0.99, 0.001}
+                                                     })),
+
+          m_redis_state_family(prometheus::BuildGauge()
+                                   .Name("redis_circuit_state")
+                                   .Help("Circuit breaker state: 0=Healthy, 1=Degraded, 2=Draining")
+                                   .Register(*m_registry)),
+          m_redis_dropped_family(prometheus::BuildCounter()
+                                     .Name("redis_dropped_events_total")
+                                     .Help("Total telemetry events dropped due to buffer overflow")
+                                     .Register(*m_registry)),
+          m_redis_drained_family(prometheus::BuildCounter()
+                                     .Name("redis_drained_events_total")
+                                     .Help("Total telemetry events drained back to Redis master")
+                                     .Register(*m_registry)),
+          m_redis_drain_failures_family(prometheus::BuildCounter()
+                                            .Name("redis_drain_failures_total")
+                                            .Help("Total telemetry events failed during drain")
+                                            .Register(*m_registry)),
+          m_redis_failovers_family(prometheus::BuildCounter()
+                                       .Name("redis_sentinel_failovers_total")
+                                       .Help("Total Sentinel master failover events")
+                                       .Register(*m_registry))
     {
     }
 
@@ -93,6 +141,12 @@ private:
 
     prometheus::Family<prometheus::Summary>& m_latency_family;
     prometheus::Summary& m_latency_summary;
+
+    prometheus::Family<prometheus::Gauge>& m_redis_state_family;
+    prometheus::Family<prometheus::Counter>& m_redis_dropped_family;
+    prometheus::Family<prometheus::Counter>& m_redis_drained_family;
+    prometheus::Family<prometheus::Counter>& m_redis_drain_failures_family;
+    prometheus::Family<prometheus::Counter>& m_redis_failovers_family;
 };
 
 } // namespace run::monitoring
