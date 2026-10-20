@@ -5,6 +5,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace run::storage::redis
@@ -24,6 +25,8 @@ struct RedisConfig
     std::chrono::milliseconds connection_timeout{100};
     std::chrono::milliseconds command_timeout{50};
     std::size_t num_shards{1};
+    std::size_t pool_size{2};
+    std::chrono::seconds ttl_refresh_interval{30};
 };
 
 struct BufferConfig
@@ -43,8 +46,19 @@ struct DeferredTrackEvent
     int32_t delta_points{0};
 };
 
+/**
+ * @brief Formats shard master name.
+ * 
+ * When total_shards <= 1, returns base_name ("mymaster") for backward compatibility
+ * with single-master setups (e.g. docker-compose, standalone Sentinel).
+ * When total_shards > 1, returns "base_name-0", "base_name-1", etc.
+ */
 inline std::string GetShardMasterName(std::string_view base_name, std::size_t shard_idx, std::size_t total_shards)
 {
+    if (base_name.empty())
+    {
+        base_name = "mymaster";
+    }
     if (total_shards <= 1)
     {
         return std::string(base_name);
@@ -84,5 +98,33 @@ inline std::vector<SentinelNode> ParseSentinelNodes(std::string_view sentinels_s
 
     return nodes;
 }
+
+/**
+ * @brief Overrides RedisConfig values with environment variables if present.
+ * Supported env vars:
+ *   - REDIS_NUM_SHARDS
+ *   - REDIS_POOL_SIZE
+ *   - REDIS_MASTER_NAME
+ *   - REDIS_SENTINELS (comma-separated host:port)
+ *   - REDIS_PASSWORD
+ *   - REDIS_CONNECTION_TIMEOUT_MS
+ *   - REDIS_COMMAND_TIMEOUT_MS
+ *   - REDIS_TTL_REFRESH_INTERVAL_SEC
+ */
+RedisConfig LoadRedisConfigFromEnv(RedisConfig base = {});
+
+/**
+ * @brief Overrides BufferConfig values with environment variables if present.
+ * Supported env vars:
+ *   - BUFFER_IN_MEMORY_CAPACITY
+ *   - BUFFER_DRAIN_BATCH_SIZE
+ */
+BufferConfig LoadBufferConfigFromEnv(BufferConfig base = {});
+
+/**
+ * @brief Loads both RedisConfig and BufferConfig from config file (INI) and env.
+ * Environment variables take precedence over config file settings.
+ */
+std::pair<RedisConfig, BufferConfig> LoadStorageConfig(const std::string& config_file = "");
 
 } // namespace run::storage::redis

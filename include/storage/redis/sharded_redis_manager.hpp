@@ -33,6 +33,7 @@ public:
 
     // Hot-path Telemetry Ingestion (sharded by run_id)
     net::awaitable<bool> PushTrackEventAsync(DeferredTrackEvent event);
+    net::awaitable<bool> PushTrackBatchAsync(std::vector<DeferredTrackEvent> events);
 
     // WebSocket Ticket Management (sharded by ticket token)
     net::awaitable<bool> SetWsTicketAsync(const std::string& ticket, uint64_t user_id,
@@ -51,8 +52,16 @@ public:
     // Generic Hash helpers
     net::awaitable<bool> HSetAsync(const std::string& key, const std::string& field, const std::string& value,
                              std::optional<std::chrono::seconds> ttl = std::nullopt);
+    net::awaitable<bool> HSetMultipleAsync(const std::string& key,
+                                           const std::vector<std::pair<std::string, std::string>>& fields,
+                                           std::optional<std::chrono::seconds> ttl = std::nullopt);
+    net::awaitable<bool> HSetMultipleAsync(const std::string& key,
+                                           const std::vector<std::string>& flattened_fields,
+                                           std::optional<std::chrono::seconds> ttl = std::nullopt);
     net::awaitable<std::optional<std::string>> HGetAsync(const std::string& key, const std::string& field);
     net::awaitable<std::unordered_map<std::string, std::string>> HGetAllAsync(const std::string& key);
+
+    void InvalidateTtl(uint64_t run_id);
 
     // Shard routing queries
     std::size_t GetShardIndex(uint64_t key) const noexcept;

@@ -45,6 +45,79 @@ TEST(RedisConfigTest, GetShardMasterName_Formatting)
     EXPECT_EQ(GetShardMasterName("mymaster", 0, 1), "mymaster");
     EXPECT_EQ(GetShardMasterName("mymaster", 0, 4), "mymaster-0");
     EXPECT_EQ(GetShardMasterName("mymaster", 3, 4), "mymaster-3");
+    EXPECT_EQ(GetShardMasterName("", 0, 1), "mymaster");
+    EXPECT_EQ(GetShardMasterName("", 2, 4), "mymaster-2");
+}
+
+TEST(RedisConfigTest, LoadStorageConfig_FromFileAndEnvOverrides)
+{
+    // 1. Test config file reading
+    auto [redis_cfg, buf_cfg] = LoadStorageConfig("runner.cfg");
+    EXPECT_EQ(redis_cfg.num_shards, 1);
+    EXPECT_EQ(redis_cfg.pool_size, 2);
+    EXPECT_EQ(redis_cfg.master_name, "mymaster");
+    EXPECT_EQ(redis_cfg.ttl_refresh_interval.count(), 30);
+    EXPECT_EQ(buf_cfg.in_memory_capacity, 16384);
+    EXPECT_EQ(buf_cfg.drain_batch_size, 512);
+
+    // 2. Test dynamic environment variable overrides without recompilation
+    setenv("REDIS_NUM_SHARDS", "4", 1);
+    setenv("REDIS_POOL_SIZE", "3", 1);
+    setenv("REDIS_MASTER_NAME", "custom_cluster", 1);
+    setenv("REDIS_TTL_REFRESH_INTERVAL_SEC", "45", 1);
+    setenv("BUFFER_IN_MEMORY_CAPACITY", "32768", 1);
+    setenv("BUFFER_DRAIN_BATCH_SIZE", "1024", 1);
+
+    auto [env_redis, env_buf] = LoadStorageConfig("runner.cfg");
+    EXPECT_EQ(env_redis.num_shards, 4);
+    EXPECT_EQ(env_redis.pool_size, 3);
+    EXPECT_EQ(env_redis.master_name, "custom_cluster");
+    EXPECT_EQ(env_redis.ttl_refresh_interval.count(), 45);
+    EXPECT_EQ(env_buf.in_memory_capacity, 32768);
+    EXPECT_EQ(env_buf.drain_batch_size, 1024);
+
+    unsetenv("REDIS_NUM_SHARDS");
+    unsetenv("REDIS_POOL_SIZE");
+    unsetenv("REDIS_MASTER_NAME");
+    unsetenv("REDIS_TTL_REFRESH_INTERVAL_SEC");
+    unsetenv("BUFFER_IN_MEMORY_CAPACITY");
+    unsetenv("BUFFER_DRAIN_BATCH_SIZE");
+}
+
+TEST(RedisConnectionPoolTest, ConnectionPoolTopologyAndTTLThrottling)
+{
+    boost::asio::io_context ioc;
+
+    RedisConfig cfg{
+        .master_name = "mymaster",
+        .num_shards = 1,
+        .pool_size = 3,
+        .ttl_refresh_interval = std::chrono::seconds(45),
+    };
+
+    RedisConnectionPool pool(ioc.get_executor(), cfg);
+
+    EXPECT_EQ(pool.GetPoolSize(), 3);
+    EXPECT_EQ(pool.GetConnectionCount(), 0);
+    EXPECT_FALSE(pool.IsConnected());
+
+    // Connect to master creates pool_size multiplexed connections
+    pool.ConnectToMaster("127.0.0.1", "6379");
+    EXPECT_EQ(pool.GetConnectionCount(), 3);
+    EXPECT_TRUE(pool.IsConnected());
+
+    // Hot-path TTL throttling check: first call refreshes, subsequent calls within interval are throttled
+    EXPECT_TRUE(pool.ShouldRefreshTtl(101));
+    EXPECT_FALSE(pool.ShouldRefreshTtl(101));
+    EXPECT_FALSE(pool.ShouldRefreshTtl(101));
+
+    // Different run ID triggers refresh independently
+    EXPECT_TRUE(pool.ShouldRefreshTtl(202));
+    EXPECT_FALSE(pool.ShouldRefreshTtl(202));
+
+    // Invalidation resets TTL refresh trigger for the given run_id
+    pool.InvalidateTtl(101);
+    EXPECT_TRUE(pool.ShouldRefreshTtl(101));
 }
 
 TEST(InMemoryLockFreeBufferTest, PushPop_MaintainsFIFOOrder)
@@ -419,6 +492,110 @@ TEST(RedisTrackRepositoryTest, RoutesTelemetryPointToDegradedShardBuffer)
     EXPECT_DOUBLE_EQ(popped.latitude, 55.75);
     EXPECT_DOUBLE_EQ(popped.delta_meters, 12.5);
     EXPECT_EQ(popped.delta_points, 3);
+}
+
+TEST(ResilientRedisProducerTest, PushTrackBatchAsync_BuffersWhenDegraded)
+{
+    boost::asio::io_context ioc;
+
+    RedisConfig redis_cfg{
+        .master_name = "mymaster",
+        .sentinels = {{"127.0.0.1", "9999"}},
+        .num_shards = 1,
+    };
+    BufferConfig buffer_cfg{
+        .in_memory_capacity = 100,
+        .drain_batch_size = 20,
+    };
+
+    auto producer = std::make_shared<ResilientRedisProducer>(ioc.get_executor(), redis_cfg, buffer_cfg);
+    EXPECT_EQ(producer->GetCircuitState(), CircuitState::Degraded);
+
+    std::vector<DeferredTrackEvent> batch = {
+        DeferredTrackEvent{.run_id = 1, .timestamp = 1000},
+        DeferredTrackEvent{.run_id = 1, .timestamp = 2000},
+        DeferredTrackEvent{.run_id = 1, .timestamp = 3000}
+    };
+
+    boost::asio::co_spawn(
+        ioc,
+        [&]() -> boost::asio::awaitable<void>
+        {
+            const bool ok = co_await producer->PushTrackBatchAsync(std::move(batch));
+            EXPECT_TRUE(ok);
+            co_return;
+        },
+        boost::asio::detached);
+
+    ioc.run();
+
+    auto buffer = producer->GetBuffer();
+    ASSERT_NE(buffer, nullptr);
+
+    DeferredTrackEvent e1, e2, e3;
+    EXPECT_TRUE(buffer->Pop(e1));
+    EXPECT_EQ(e1.timestamp, 1000);
+    EXPECT_TRUE(buffer->Pop(e2));
+    EXPECT_EQ(e2.timestamp, 2000);
+    EXPECT_TRUE(buffer->Pop(e3));
+    EXPECT_EQ(e3.timestamp, 3000);
+    EXPECT_TRUE(buffer->IsEmpty());
+}
+
+TEST(RedisTrackRepositoryTest, PushTrackBatchAsync_BatchesPointsIntoDegradedBuffer)
+{
+    boost::asio::io_context ioc;
+
+    RedisConfig redis_cfg{
+        .master_name = "mymaster",
+        .sentinels = {{"127.0.0.1", "9999"}},
+        .num_shards = 2,
+    };
+    BufferConfig buffer_cfg{
+        .in_memory_capacity = 64,
+        .drain_batch_size = 16,
+    };
+
+    auto manager = std::make_shared<ShardedRedisManager>(ioc.get_executor(), redis_cfg, buffer_cfg);
+    auto repo = std::make_shared<RedisTrackRepository>(manager);
+
+    std::vector<run::gameplay::workout_tracking::RunPoint> points = {
+        run::gameplay::workout_tracking::RunPoint::Create(555, 1, 55.75, 37.61, 1000, 0, 1.0f, 4.0f),
+        run::gameplay::workout_tracking::RunPoint::Create(555, 2, 55.76, 37.62, 2000, 0, 1.0f, 4.2f),
+        run::gameplay::workout_tracking::RunPoint::Create(555, 3, 55.77, 37.63, 3000, 0, 1.0f, 4.5f)
+    };
+
+    boost::asio::co_spawn(
+        ioc,
+        [&]() -> boost::asio::awaitable<void>
+        {
+            const bool ok = co_await repo->PushTrackBatchAsync(555, points, 300.0, 15);
+            EXPECT_TRUE(ok);
+            co_return;
+        },
+        boost::asio::detached);
+
+    ioc.run();
+
+    const std::size_t shard_idx = manager->GetShardIndex(555);
+    auto buffer = manager->GetShard(shard_idx)->GetBuffer();
+    ASSERT_NE(buffer, nullptr);
+
+    DeferredTrackEvent p1, p2, p3;
+    EXPECT_TRUE(buffer->Pop(p1));
+    EXPECT_EQ(p1.run_id, 555);
+    EXPECT_DOUBLE_EQ(p1.delta_meters, 100.0);
+    EXPECT_EQ(p1.delta_points, 0);
+
+    EXPECT_TRUE(buffer->Pop(p2));
+    EXPECT_EQ(p2.run_id, 555);
+    EXPECT_DOUBLE_EQ(p2.delta_meters, 100.0);
+    EXPECT_EQ(p2.delta_points, 0);
+
+    EXPECT_TRUE(buffer->Pop(p3));
+    EXPECT_EQ(p3.run_id, 555);
+    EXPECT_DOUBLE_EQ(p3.delta_meters, 100.0);
+    EXPECT_EQ(p3.delta_points, 15);
 }
 
 class MockTrackRepository : public run::repository::ITrackRepository

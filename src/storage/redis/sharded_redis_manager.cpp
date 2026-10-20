@@ -63,6 +63,56 @@ net::awaitable<bool> ShardedRedisManager::PushTrackEventAsync(DeferredTrackEvent
     co_return co_await m_shards[shard_idx]->PushTrackEventAsync(event);
 }
 
+net::awaitable<bool> ShardedRedisManager::PushTrackBatchAsync(std::vector<DeferredTrackEvent> events)
+{
+    if (events.empty())
+    {
+        co_return true;
+    }
+
+    if (m_shards.empty())
+    {
+        co_return false;
+    }
+
+    // Common case: batch is from a single runner / run_id
+    const uint64_t first_run_id = events[0].run_id;
+    bool single_run = true;
+    for (std::size_t i = 1; i < events.size(); ++i)
+    {
+        if (events[i].run_id != first_run_id)
+        {
+            single_run = false;
+            break;
+        }
+    }
+
+    if (single_run)
+    {
+        const std::size_t shard_idx = GetShardIndex(first_run_id);
+        co_return co_await m_shards[shard_idx]->PushTrackBatchAsync(std::move(events));
+    }
+
+    // If batch contains multiple run_ids, dispatch to their respective shards
+    std::unordered_map<std::size_t, std::vector<DeferredTrackEvent>> shard_batches;
+    for (auto& ev : events)
+    {
+        shard_batches[GetShardIndex(ev.run_id)].push_back(std::move(ev));
+    }
+
+    bool all_ok = true;
+    for (auto& [shard_idx, batch] : shard_batches)
+    {
+        const bool ok = co_await m_shards[shard_idx]->PushTrackBatchAsync(std::move(batch));
+        if (!ok)
+        {
+            all_ok = false;
+        }
+    }
+
+    co_return all_ok;
+}
+
 net::awaitable<bool> ShardedRedisManager::SetWsTicketAsync(const std::string& ticket, uint64_t user_id,
                                                            std::chrono::seconds ttl)
 {
@@ -112,6 +162,33 @@ net::awaitable<bool> ShardedRedisManager::HSetAsync(const std::string& key, cons
 {
     const std::size_t shard_idx = GetShardIndex(key);
     co_return co_await m_shards[shard_idx]->GetRedisPool()->HSetAsync(key, field, value, ttl);
+}
+
+net::awaitable<bool> ShardedRedisManager::HSetMultipleAsync(
+    const std::string& key,
+    const std::vector<std::pair<std::string, std::string>>& fields,
+    std::optional<std::chrono::seconds> ttl)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->HSetMultipleAsync(key, fields, ttl);
+}
+
+net::awaitable<bool> ShardedRedisManager::HSetMultipleAsync(
+    const std::string& key,
+    const std::vector<std::string>& flattened_fields,
+    std::optional<std::chrono::seconds> ttl)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->HSetMultipleAsync(key, flattened_fields, ttl);
+}
+
+void ShardedRedisManager::InvalidateTtl(uint64_t run_id)
+{
+    const std::size_t shard_idx = GetShardIndex(run_id);
+    if (shard_idx < m_shards.size() && m_shards[shard_idx] && m_shards[shard_idx]->GetRedisPool())
+    {
+        m_shards[shard_idx]->GetRedisPool()->InvalidateTtl(run_id);
+    }
 }
 
 net::awaitable<std::optional<std::string>> ShardedRedisManager::HGetAsync(const std::string& key,

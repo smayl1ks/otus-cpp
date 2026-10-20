@@ -121,6 +121,57 @@ net::awaitable<bool> ResilientRedisProducer::PushTrackEventAsync(DeferredTrackEv
     co_return true;
 }
 
+net::awaitable<bool> ResilientRedisProducer::PushTrackBatchAsync(std::vector<DeferredTrackEvent> events)
+{
+    if (events.empty())
+    {
+        co_return true;
+    }
+
+    const auto current_state = m_state.load();
+
+    if (current_state == CircuitState::Healthy)
+    {
+        const bool write_ok = co_await m_redis_pool->FlushTrackBatchAsync(events);
+        if (write_ok)
+        {
+            m_consecutive_failures.store(0);
+            co_return true;
+        }
+
+        const auto failures = ++m_consecutive_failures;
+        LOG_WARN("Direct Redis batch write failed (failure count: {}). Falling back to in-memory buffer.", failures);
+
+        if (failures >= m_failure_threshold)
+        {
+            m_state.store(CircuitState::Degraded);
+            monitoring::MetricsCollector::Instance().SetRedisCircuitState(m_shard_id,
+                                                                          static_cast<double>(CircuitState::Degraded));
+            LOG_CRITICAL(">>> Circuit Breaker TRIPPED to DEGRADED state! Redis Master is unreachable. <<<");
+        }
+    }
+
+    bool all_pushed = true;
+    for (auto& ev : events)
+    {
+        const bool pushed = m_buffer->Push(std::move(ev));
+        if (!pushed)
+        {
+            m_dropped_events++;
+            monitoring::MetricsCollector::Instance().IncrementDroppedEvents(m_shard_id);
+            all_pushed = false;
+        }
+    }
+
+    if (!all_pushed)
+    {
+        LOG_CRITICAL("InMemoryLockFreeBuffer OVERFLOW during batch push (total dropped: {})",
+                     m_dropped_events.load());
+    }
+
+    co_return all_pushed;
+}
+
 void ResilientRedisProducer::OnMasterFailover(const std::string& new_host, const std::string& new_port)
 {
     LOG_INFO("Sentinel notified master failover to {}:{}. Re-targeting connection pool...", new_host, new_port);

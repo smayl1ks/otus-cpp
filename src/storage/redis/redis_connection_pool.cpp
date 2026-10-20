@@ -22,15 +22,23 @@ void RedisConnectionPool::ConnectToMaster(const std::string& host, const std::st
 {
     std::lock_guard lock(m_mutex);
 
-    if (m_connection && m_current_host == host && m_current_port == port)
+    if (!m_connections.empty() && m_current_host == host && m_current_port == port)
     {
         return;
     }
 
-    if (m_connection)
+    if (!m_connections.empty())
     {
-        LOG_INFO("Closing previous connection to Redis master {}:{}", m_current_host, m_current_port);
-        m_connection->cancel();
+        LOG_INFO("Closing {} previous connection(s) to Redis master {}:{}",
+                 m_connections.size(), m_current_host, m_current_port);
+        for (auto& conn : m_connections)
+        {
+            if (conn)
+            {
+                conn->cancel();
+            }
+        }
+        m_connections.clear();
     }
 
     m_current_host = host;
@@ -46,11 +54,18 @@ void RedisConnectionPool::ConnectToMaster(const std::string& host, const std::st
     cfg.reconnect_wait_interval = std::chrono::seconds(1);
     cfg.health_check_interval = std::chrono::seconds(5);
 
-    m_connection = std::make_shared<boost::redis::connection>(m_executor);
-    m_is_connected = true;
+    const std::size_t pool_size = std::max<std::size_t>(1, m_config.pool_size);
+    m_connections.reserve(pool_size);
 
-    LOG_INFO("Connecting to Redis master at {}:{}...", host, port);
-    m_connection->async_run(cfg, net::consign(net::detached, m_connection));
+    LOG_INFO("Connecting pool of {} multiplexed connection(s) to Redis master at {}:{}...", pool_size, host, port);
+    for (std::size_t i = 0; i < pool_size; ++i)
+    {
+        auto conn = std::make_shared<boost::redis::connection>(m_executor);
+        conn->async_run(cfg, net::consign(net::detached, conn));
+        m_connections.push_back(std::move(conn));
+    }
+
+    m_is_connected = true;
 }
 
 void RedisConnectionPool::UpdateMaster(const std::string& new_host, const std::string& new_port)
@@ -59,10 +74,21 @@ void RedisConnectionPool::UpdateMaster(const std::string& new_host, const std::s
     ConnectToMaster(new_host, new_port);
 }
 
+std::shared_ptr<boost::redis::connection> RedisConnectionPool::GetConnection() const
+{
+    std::lock_guard lock(m_mutex);
+    if (m_connections.empty())
+    {
+        return nullptr;
+    }
+    const std::size_t idx = m_next_connection.fetch_add(1, std::memory_order_relaxed) % m_connections.size();
+    return m_connections[idx];
+}
+
 bool RedisConnectionPool::IsConnected() const noexcept
 {
     std::lock_guard lock(m_mutex);
-    return m_is_connected && (m_connection != nullptr);
+    return m_is_connected && !m_connections.empty();
 }
 
 std::pair<std::string, std::string> RedisConnectionPool::GetActiveMaster() const
@@ -71,14 +97,59 @@ std::pair<std::string, std::string> RedisConnectionPool::GetActiveMaster() const
     return {m_current_host, m_current_port};
 }
 
+std::size_t RedisConnectionPool::GetConnectionCount() const noexcept
+{
+    std::lock_guard lock(m_mutex);
+    return m_connections.size();
+}
+
+std::size_t RedisConnectionPool::GetPoolSize() const noexcept
+{
+    return m_config.pool_size;
+}
+
+bool RedisConnectionPool::ShouldRefreshTtl(uint64_t run_id)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const auto interval = m_config.ttl_refresh_interval.count() > 0
+                              ? m_config.ttl_refresh_interval
+                              : std::chrono::seconds(30);
+
+    std::lock_guard lock(m_ttl_mutex);
+    auto it = m_last_ttl_refresh.find(run_id);
+    if (it == m_last_ttl_refresh.end() || (now - it->second) >= interval)
+    {
+        m_last_ttl_refresh[run_id] = now;
+
+        if (m_last_ttl_refresh.size() > 20000)
+        {
+            for (auto iter = m_last_ttl_refresh.begin(); iter != m_last_ttl_refresh.end();)
+            {
+                if (now - iter->second > std::chrono::minutes(15))
+                {
+                    iter = m_last_ttl_refresh.erase(iter);
+                }
+                else
+                {
+                    ++iter;
+                }
+            }
+        }
+
+        return true;
+    }
+    return false;
+}
+
+void RedisConnectionPool::InvalidateTtl(uint64_t run_id)
+{
+    std::lock_guard lock(m_ttl_mutex);
+    m_last_ttl_refresh.erase(run_id);
+}
+
 net::awaitable<bool> RedisConnectionPool::PingAsync()
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -105,12 +176,7 @@ net::awaitable<bool> RedisConnectionPool::PingAsync()
 net::awaitable<bool> RedisConnectionPool::PushTrackPointAsync(uint64_t run_id, double lat, double lon, double speed,
                                                               int64_t ts)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -121,7 +187,17 @@ net::awaitable<bool> RedisConnectionPool::PushTrackPointAsync(uint64_t run_id, d
 
     boost::redis::request req;
     req.push("RPUSH", track_key, point_str);
-    req.push("EXPIRE", track_key, "86400");
+
+    // Optimized: Only refresh TTL at configured interval (30-60s) instead of per point
+    if (ShouldRefreshTtl(run_id))
+    {
+        req.push("EXPIRE", track_key, "86400");
+        const std::string active_key = fmt::format("run:active:{}", run_id);
+        req.push("EXPIRE", active_key, "86400");
+        const auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
+    }
 
     boost::redis::generic_response resp;
     boost::system::error_code ec;
@@ -141,12 +217,7 @@ net::awaitable<bool> RedisConnectionPool::PushTrackPointAsync(uint64_t run_id, d
 net::awaitable<bool> RedisConnectionPool::UpdateActiveRunStatsAsync(uint64_t run_id, double delta_meters,
                                                                     int32_t delta_points)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -155,12 +226,25 @@ net::awaitable<bool> RedisConnectionPool::UpdateActiveRunStatsAsync(uint64_t run
     const std::string active_key = fmt::format("run:active:{}", run_id);
 
     boost::redis::request req;
-    req.push("HINCRBYFLOAT", active_key, "distance_meters", fmt::format("{:.2f}", delta_meters));
+    if (delta_meters > 0.0)
+    {
+        req.push("HINCRBYFLOAT", active_key, "distance_meters", fmt::format("{:.2f}", delta_meters));
+    }
     if (delta_points > 0)
     {
         req.push("HINCRBY", active_key, "uram_points", std::to_string(delta_points));
     }
-    req.push("EXPIRE", active_key, "86400");
+
+    // Refresh TTL periodically if due
+    if (ShouldRefreshTtl(run_id))
+    {
+        req.push("EXPIRE", active_key, "86400");
+        const std::string track_key = fmt::format("run:track:{}", run_id);
+        req.push("EXPIRE", track_key, "86400");
+        const auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
+    }
 
     boost::redis::generic_response resp;
     boost::system::error_code ec;
@@ -184,38 +268,54 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
         co_return true;
     }
 
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
     }
 
-    boost::redis::request req;
+    struct RunBatchAggregate
+    {
+        std::vector<std::string> points;
+        double total_delta_meters{0.0};
+        int32_t total_delta_points{0};
+    };
 
+    std::unordered_map<uint64_t, RunBatchAggregate> grouped;
     for (const auto& ev : batch)
     {
-        const std::string track_key = fmt::format("run:track:{}", ev.run_id);
-        const std::string point_str = fmt::format("{},{},{},{}", ev.latitude, ev.longitude, ev.speed, ev.timestamp);
-        req.push("RPUSH", track_key, point_str);
-        req.push("EXPIRE", track_key, "86400");
+        auto& data = grouped[ev.run_id];
+        data.points.push_back(fmt::format("{},{},{},{}", ev.latitude, ev.longitude, ev.speed, ev.timestamp));
+        data.total_delta_meters += ev.delta_meters;
+        data.total_delta_points += ev.delta_points;
+    }
 
-        if (ev.delta_meters > 0.0 || ev.delta_points > 0)
+    boost::redis::request req;
+    const auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    for (const auto& [run_id, data] : grouped)
+    {
+        const std::string track_key = fmt::format("run:track:{}", run_id);
+        const std::string active_key = fmt::format("run:active:{}", run_id);
+
+        req.push_range("RPUSH", track_key, data.points.begin(), data.points.end());
+
+        if (data.total_delta_meters > 0.0)
         {
-            const std::string active_key = fmt::format("run:active:{}", ev.run_id);
-            if (ev.delta_meters > 0.0)
-            {
-                req.push("HINCRBYFLOAT", active_key, "distance_meters", fmt::format("{:.2f}", ev.delta_meters));
-            }
-            if (ev.delta_points > 0)
-            {
-                req.push("HINCRBY", active_key, "uram_points", std::to_string(ev.delta_points));
-            }
+            req.push("HINCRBYFLOAT", active_key, "distance_meters", fmt::format("{:.2f}", data.total_delta_meters));
+        }
+        if (data.total_delta_points > 0)
+        {
+            req.push("HINCRBY", active_key, "uram_points", std::to_string(data.total_delta_points));
+        }
+
+        // Only emit EXPIRE once every 30-60 seconds per run
+        if (ShouldRefreshTtl(run_id))
+        {
+            req.push("EXPIRE", track_key, "86400");
             req.push("EXPIRE", active_key, "86400");
+            req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
         }
     }
 
@@ -232,19 +332,15 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
         co_return false;
     }
 
-    LOG_DEBUG("Successfully flushed batch of {} deferred track events to Redis Master", batch.size());
+    LOG_DEBUG("Successfully flushed batch of {} deferred track events to Redis Master in single async_exec",
+              batch.size());
     co_return true;
 }
 
 net::awaitable<bool> RedisConnectionPool::SetWsTicketAsync(const std::string& ticket, uint64_t user_id,
                                                            std::chrono::seconds ttl)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -272,12 +368,7 @@ net::awaitable<bool> RedisConnectionPool::SetWsTicketAsync(const std::string& ti
 
 net::awaitable<std::optional<uint64_t>> RedisConnectionPool::ValidateWsTicketAsync(const std::string& ticket)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn || ticket.empty())
     {
         co_return std::nullopt;
@@ -320,12 +411,7 @@ net::awaitable<std::optional<uint64_t>> RedisConnectionPool::ValidateWsTicketAsy
 
 net::awaitable<bool> RedisConnectionPool::PublishAsync(const std::string& channel, const std::string& payload)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -352,12 +438,7 @@ net::awaitable<bool> RedisConnectionPool::PublishAsync(const std::string& channe
 net::awaitable<bool> RedisConnectionPool::SetAsync(const std::string& key, const std::string& value,
                                                    std::chrono::seconds ttl)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -377,12 +458,7 @@ net::awaitable<bool> RedisConnectionPool::SetAsync(const std::string& key, const
 
 net::awaitable<std::optional<std::string>> RedisConnectionPool::GetAsync(const std::string& key)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return std::nullopt;
@@ -413,12 +489,7 @@ net::awaitable<std::optional<std::string>> RedisConnectionPool::GetAsync(const s
 
 net::awaitable<bool> RedisConnectionPool::DeleteAsync(const std::string& key)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -444,12 +515,7 @@ net::awaitable<bool> RedisConnectionPool::DeleteAsync(const std::string& key)
 
 net::awaitable<bool> RedisConnectionPool::ExistsAsync(const std::string& key)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -476,12 +542,7 @@ net::awaitable<bool> RedisConnectionPool::ExistsAsync(const std::string& key)
 net::awaitable<bool> RedisConnectionPool::HSetAsync(const std::string& key, const std::string& field,
                                                     const std::string& value, std::optional<std::chrono::seconds> ttl)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return false;
@@ -503,15 +564,53 @@ net::awaitable<bool> RedisConnectionPool::HSetAsync(const std::string& key, cons
     co_return !ec;
 }
 
+net::awaitable<bool> RedisConnectionPool::HSetMultipleAsync(
+    const std::string& key,
+    const std::vector<std::pair<std::string, std::string>>& field_values,
+    std::optional<std::chrono::seconds> ttl)
+{
+    std::vector<std::string> flattened;
+    flattened.reserve(field_values.size() * 2);
+    for (const auto& [f, v] : field_values)
+    {
+        flattened.push_back(f);
+        flattened.push_back(v);
+    }
+
+    co_return co_await HSetMultipleAsync(key, flattened, ttl);
+}
+
+net::awaitable<bool> RedisConnectionPool::HSetMultipleAsync(
+    const std::string& key,
+    const std::vector<std::string>& flattened_field_values,
+    std::optional<std::chrono::seconds> ttl)
+{
+    auto conn = GetConnection();
+    if (!conn || flattened_field_values.empty())
+    {
+        co_return false;
+    }
+
+    boost::redis::request req;
+    req.push_range("HSET", key, flattened_field_values.begin(), flattened_field_values.end());
+    if (ttl.has_value())
+    {
+        req.push("EXPIRE", key, std::to_string(ttl->count()));
+    }
+
+    boost::redis::generic_response resp;
+    boost::system::error_code ec;
+
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+
+    co_return !ec;
+}
+
 net::awaitable<std::optional<std::string>> RedisConnectionPool::HGetAsync(const std::string& key,
                                                                           const std::string& field)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     if (!conn)
     {
         co_return std::nullopt;
@@ -542,12 +641,7 @@ net::awaitable<std::optional<std::string>> RedisConnectionPool::HGetAsync(const 
 
 net::awaitable<std::unordered_map<std::string, std::string>> RedisConnectionPool::HGetAllAsync(const std::string& key)
 {
-    std::shared_ptr<boost::redis::connection> conn;
-    {
-        std::lock_guard lock(m_mutex);
-        conn = m_connection;
-    }
-
+    auto conn = GetConnection();
     std::unordered_map<std::string, std::string> result;
     if (!conn)
     {

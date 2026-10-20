@@ -42,26 +42,23 @@ RedisTrackRepository::PushTrackBatchAsync(uint64_t run_id, std::span<const gamep
     }
 
     const double delta_per_point = total_delta_meters / static_cast<double>(points.size());
-    bool all_ok = true;
+    std::vector<DeferredTrackEvent> events;
+    events.reserve(points.size());
 
     for (std::size_t i = 0; i < points.size(); ++i)
     {
-        DeferredTrackEvent ev{.run_id = run_id,
-                              .latitude = points[i].coord.latitude,
-                              .longitude = points[i].coord.longitude,
-                              .speed = points[i].speed_ms.value_or(0.0f),
-                              .timestamp = points[i].RecordedAtMs(),
-                              .delta_meters = delta_per_point,
-                              .delta_points = (i == points.size() - 1) ? total_delta_points : 0};
-
-        const bool ok = co_await m_redis_manager->PushTrackEventAsync(ev);
-        if (!ok)
-        {
-            all_ok = false;
-        }
+        events.push_back(DeferredTrackEvent{
+            .run_id = run_id,
+            .latitude = points[i].coord.latitude,
+            .longitude = points[i].coord.longitude,
+            .speed = points[i].speed_ms.value_or(0.0f),
+            .timestamp = points[i].RecordedAtMs(),
+            .delta_meters = delta_per_point,
+            .delta_points = (i == points.size() - 1) ? total_delta_points : 0
+        });
     }
 
-    co_return all_ok;
+    co_return co_await m_redis_manager->PushTrackBatchAsync(std::move(events));
 }
 
 boost::asio::awaitable<bool> RedisTrackRepository::InitActiveRunAsync(const std::string& session_id, int64_t user_id,
@@ -76,15 +73,21 @@ boost::asio::awaitable<bool> RedisTrackRepository::InitActiveRunAsync(const std:
     co_await m_redis_manager->SetAsync(user_key, session_id, std::chrono::hours(24));
 
     const std::string run_key = fmt::format("run:active:{}", session_id);
-    co_await m_redis_manager->HSetAsync(run_key, "user_id", std::to_string(user_id));
-    co_await m_redis_manager->HSetAsync(run_key, "team_id", std::to_string(team_id));
-    co_await m_redis_manager->HSetAsync(run_key, "start_timestamp", std::to_string(start_timestamp));
-    co_await m_redis_manager->HSetAsync(run_key, "distance_meters", "0.0");
-    co_await m_redis_manager->HSetAsync(run_key, "uram_points", "0");
-    co_await m_redis_manager->HSetAsync(run_key, "points_count", "0");
-    co_await m_redis_manager->HSetAsync(run_key, "status", "active", std::chrono::hours(24));
+    const auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
 
-    co_return true;
+    const std::vector<std::pair<std::string, std::string>> fields = {
+        {"user_id", std::to_string(user_id)},
+        {"team_id", std::to_string(team_id)},
+        {"start_timestamp", std::to_string(start_timestamp)},
+        {"distance_meters", "0.0"},
+        {"uram_points", "0"},
+        {"points_count", "0"},
+        {"status", "active"},
+        {"last_ttl_refresh", std::to_string(now_sec)}
+    };
+
+    co_return co_await m_redis_manager->HSetMultipleAsync(run_key, fields, std::chrono::hours(24));
 }
 
 boost::asio::awaitable<std::optional<repository::ActiveRunStats>>
@@ -152,6 +155,15 @@ boost::asio::awaitable<bool> RedisTrackRepository::FinalizeActiveRunAsync(const 
 
     const std::string run_key = fmt::format("run:active:{}", session_id);
     co_await m_redis_manager->HSetAsync(run_key, "status", "finished", std::chrono::hours(1));
+
+    try
+    {
+        uint64_t run_id = std::stoull(session_id);
+        m_redis_manager->InvalidateTtl(run_id);
+    }
+    catch (...)
+    {
+    }
 
     co_return true;
 }

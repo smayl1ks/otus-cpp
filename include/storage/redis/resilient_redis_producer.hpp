@@ -58,6 +58,7 @@ public:
 
     // Hot-path Telemetry Ingestion
     net::awaitable<bool> PushTrackEventAsync(DeferredTrackEvent event);
+    net::awaitable<bool> PushTrackBatchAsync(std::vector<DeferredTrackEvent> events);
 
     // Direct access to underlying Redis Pool (e.g. for WS tickets, Pub/Sub)
     std::shared_ptr<RedisConnectionPool> GetRedisPool() const noexcept;

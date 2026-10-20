@@ -20,7 +20,7 @@ message ViewportHexagon {
 }
 
 message SubscribeViewportResponse {
-  common.Status status = 1;
+  common.SystemStatus status = 1;
   repeated ViewportHexagon hexagons = 2;
 }
 

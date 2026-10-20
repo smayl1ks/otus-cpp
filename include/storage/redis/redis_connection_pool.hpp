@@ -9,12 +9,14 @@
 #include <boost/redis/request.hpp>
 #include <boost/redis/response.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace run::storage::redis
@@ -22,6 +24,29 @@ namespace run::storage::redis
 
 namespace net = boost::asio;
 
+/**
+ * @class RedisConnectionPool
+ * @brief High-throughput, multiplexed connection pool for Redis master nodes.
+ *
+ * ### Architectural Design:
+ * 1. **Multiplexed Pipeline (Boost.Redis)**:
+ *    Each individual `boost::redis::connection` operates as a fully asynchronous,
+ *    pipelined TCP multiplexer over the RESP3 protocol. Multiple coroutines can queue
+ *    commands simultaneously without waiting for prior responses; requests and responses
+ *    are streamed over a single socket in FIFO sequence.
+ *
+ * 2. **Connection Pool Topology (2-4 connections per shard)**:
+ *    To prevent head-of-line blocking on compute-heavy commands, eliminate TCP socket
+ *    buffer contention under extreme GPS ingestion rates (10k+ points/sec), and scale
+ *    across multiple Boost.Asio I/O threads/strands, this class maintains an active pool
+ *    of N independent multiplexed connections (`pool_size`, default 2-4) to the resolved
+ *    shard master. Requests are dispatched via atomic round-robin.
+ *
+ * 3. **Hot-Path TTL Throttling**:
+ *    Instead of issuing redundant `EXPIRE` commands on every GPS point (which halves Redis
+ *    throughput), TTL is renewed at a configurable interval (30-60 seconds) per active run,
+ *    recording `last_ttl_refresh` in the `run:active:<run_id>` hash.
+ */
 class RedisConnectionPool : public std::enable_shared_from_this<RedisConnectionPool>,
                             public IBatchFlusher<DeferredTrackEvent>
 {
@@ -48,7 +73,7 @@ public:
         co_return co_await FlushTrackBatchAsync(batch);
     }
 
-    // WebSecket Ticket
+    // WebSocket Ticket
     net::awaitable<bool> SetWsTicketAsync(const std::string& ticket, uint64_t user_id,
                                           std::chrono::seconds ttl = std::chrono::seconds(30));
     net::awaitable<std::optional<uint64_t>> ValidateWsTicketAsync(const std::string& ticket);
@@ -65,11 +90,27 @@ public:
     // Generic Hash helpers
     net::awaitable<bool> HSetAsync(const std::string& key, const std::string& field, const std::string& value,
                                    std::optional<std::chrono::seconds> ttl = std::nullopt);
+    net::awaitable<bool> HSetMultipleAsync(const std::string& key,
+                                           const std::vector<std::pair<std::string, std::string>>& field_values,
+                                           std::optional<std::chrono::seconds> ttl = std::nullopt);
+    net::awaitable<bool> HSetMultipleAsync(const std::string& key,
+                                           const std::vector<std::string>& flattened_field_values,
+                                           std::optional<std::chrono::seconds> ttl = std::nullopt);
     net::awaitable<std::optional<std::string>> HGetAsync(const std::string& key, const std::string& field);
     net::awaitable<std::unordered_map<std::string, std::string>> HGetAllAsync(const std::string& key);
 
+    // Observability and state queries
     bool IsConnected() const noexcept;
     std::pair<std::string, std::string> GetActiveMaster() const;
+    std::size_t GetConnectionCount() const noexcept;
+    std::size_t GetPoolSize() const noexcept;
+
+    // TTL Optimization Helper
+    bool ShouldRefreshTtl(uint64_t run_id);
+    void InvalidateTtl(uint64_t run_id);
+
+private:
+    std::shared_ptr<boost::redis::connection> GetConnection() const;
 
 private:
     net::any_io_executor m_executor;
@@ -80,7 +121,13 @@ private:
     std::string m_current_port;
     bool m_is_connected{false};
 
-    std::shared_ptr<boost::redis::connection> m_connection;
+    // Pool of multiplexed Boost.Redis connections
+    std::vector<std::shared_ptr<boost::redis::connection>> m_connections;
+    mutable std::atomic<std::size_t> m_next_connection{0};
+
+    // Hot-path TTL renewal throttle cache: run_id -> last_refresh_time
+    mutable std::mutex m_ttl_mutex;
+    std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> m_last_ttl_refresh;
 };
 
 } // namespace run::storage::redis

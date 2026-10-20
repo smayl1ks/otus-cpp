@@ -1,4 +1,5 @@
 target_sources(${PROJECT_NAME}_lib PRIVATE
+    redis/sentinel_config.cpp
     redis/sentinel_monitor.cpp
     redis/redis_connection_pool.cpp
     redis/drain_worker.cpp
