@@ -5,12 +5,12 @@ package run.proto.location;
 message LocationPoint {
   double latitude = 1;
   double longitude = 2;
-  double altitude = 3;
-  float speed = 4;
-  float heading = 5;
-  float accuracy = 6;
+  optional double altitude = 3;          // explicit presence: unset != 0
+  optional float speed = 4;              // m/s; unset when the sensor provided nothing
+  optional float heading = 5;
+  optional float accuracy = 6;
   int64 timestamp = 7;
-  float accelerometer_z = 8;
+  optional float accelerometer_z = 8;
   bool is_mock = 9;
 }
 

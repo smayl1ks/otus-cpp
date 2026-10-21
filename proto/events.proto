@@ -47,6 +47,13 @@ message BatchProcessResponse {
   string session_id = 3;
   string batch_uuid = 4;
   int64 sequence_number = 5;
+
+  // Server-side run progress snapshot (client live progress without polling)
+  int32 accepted_points_count = 6;         // Points of THIS batch that passed anticheat
+  double total_distance_meters = 7;        // Accumulated server-validated distance
+  int32 total_points_count = 8;            // Accumulated valid points in the session
+  int64 server_timestamp_ms = 9;           // Server epoch ms (client clock skew / latency)
+  uint32 retry_after_ms = 10;              // Backpressure hint when status is SERVICE_UNAVAILABLE
 }
 
 message FinishRunRequest {
@@ -61,8 +68,12 @@ message FinishRunResponse {
   string session_id = 3;              // Finalized session ID.
   
   double total_distance_meters = 4;   // Total accumulated, server-validated distance.
-  uint32 duration_seconds = 5;        // Net active run time in seconds (excluding pauses).
+  uint32 duration_seconds = 5;        // Wall-clock run time (start -> finish).
   uint32 hexes_claimed_count = 6;     // Total H3 cells newly captured or reinforced.
   uint32 total_score = 7;             // Final earned score contributed to user/faction totals.
   float average_speed_kmh = 8;        // Calculated average moving speed across the run.
+
+  uint32 moving_duration_seconds = 9; // Active time excluding pauses (gaps > 3 min).
+  repeated uint64 claimed_hexes = 10; // Captured H3 cell indexes (cap: 1000, overflow via separate fetch).
+  uint32 track_points_count = 11;     // Valid GPS points stored for the session.
 }

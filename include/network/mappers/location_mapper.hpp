@@ -25,20 +25,27 @@ public:
     {
         gameplay::anticheat::TelemetryPoint pt;
         pt.coord = gameplay::GeoPoint{.latitude = proto.latitude(), .longitude = proto.longitude()};
-        pt.accuracy_meters = proto.accuracy();
         pt.is_mock = proto.is_mock();
-        pt.accelerometer_z = proto.accelerometer_z();
         pt.recorded_at = std::chrono::system_clock::time_point{std::chrono::milliseconds{proto.timestamp()}};
 
-        if (proto.speed() != 0.0f)
+        // Explicit proto3 field presence: unset sensor value is not the same as zero
+        if (proto.has_accuracy())
+        {
+            pt.accuracy_meters = proto.accuracy();
+        }
+        if (proto.has_accelerometer_z())
+        {
+            pt.accelerometer_z = proto.accelerometer_z();
+        }
+        if (proto.has_speed())
         {
             pt.speed_ms = proto.speed();
         }
-        if (proto.altitude() != 0.0)
+        if (proto.has_altitude())
         {
             pt.altitude_meters = static_cast<float>(proto.altitude());
         }
-        if (proto.heading() != 0.0f)
+        if (proto.has_heading())
         {
             pt.heading_degrees = proto.heading();
         }
@@ -66,17 +73,19 @@ public:
         p.point_order = point_order;
         p.coord = gameplay::GeoPoint{.latitude = proto.latitude(), .longitude = proto.longitude()};
         p.h3_index = h3_index;
-        p.accuracy_meters = proto.accuracy();
-
-        if (proto.altitude() != 0.0)
+        if (proto.has_accuracy())
+        {
+            p.accuracy_meters = proto.accuracy();
+        }
+        if (proto.has_altitude())
         {
             p.altitude_meters = static_cast<float>(proto.altitude());
         }
-        if (proto.speed() != 0.0f)
+        if (proto.has_speed())
         {
             p.speed_ms = proto.speed();
         }
-        if (proto.heading() != 0.0f)
+        if (proto.has_heading())
         {
             p.heading_degrees = proto.heading();
         }
@@ -90,8 +99,12 @@ public:
     {
         proto.set_latitude(entity.coord.latitude);
         proto.set_longitude(entity.coord.longitude);
-        proto.set_accuracy(entity.accuracy_meters);
         proto.set_timestamp(entity.RecordedAtMs());
+
+        if (entity.accuracy_meters > 0.0f)
+        {
+            proto.set_accuracy(entity.accuracy_meters);
+        }
 
         if (entity.altitude_meters.has_value())
         {

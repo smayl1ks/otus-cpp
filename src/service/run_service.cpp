@@ -194,6 +194,16 @@ Task<events::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id
         co_return response;
     }
 
+    // Live progress snapshot: written stats already include this batch (same
+    // pipeline flush precedes the read)
+    response.set_accepted_points_count(static_cast<int32_t>(game_points.size()));
+    response.set_server_timestamp_ms(GetCurrentTimestampMs());
+    if (auto stats = co_await m_track_repository->GetActiveRunStatsAsync(batch.session_id()); stats.has_value())
+    {
+        response.set_total_distance_meters(stats->distance_meters);
+        response.set_total_points_count(stats->points_count);
+    }
+
     // RADAR (live position): last valid point only, fresh enough to be online.
     // Channel sharding by h3_zone happens inside ShardedRedisManager::PublishAsync.
     const std::string run_key = MakeActiveRunKey(batch.session_id());
@@ -288,12 +298,22 @@ Task<events::FinishRunResponse> RunService::FinishRunAsync(int64_t user_id, cons
     }
 
     response.set_total_distance_meters(stats->distance_meters);
-    response.set_duration_seconds(static_cast<uint32_t>(duration_seconds));
+    response.set_duration_seconds(static_cast<uint32_t>(wall_duration_ms / 1000));
+    response.set_moving_duration_seconds(static_cast<uint32_t>(duration_seconds));
     response.set_hexes_claimed_count(static_cast<uint32_t>(capture_result.claimed_hexes.size()));
     response.set_total_score(static_cast<uint32_t>(stats->points_count));
+    response.set_track_points_count(static_cast<uint32_t>(track.size()));
     response.set_average_speed_kmh(duration_seconds > 0
                                        ? static_cast<float>(stats->distance_meters / duration_seconds * 3.6)
                                        : 0.0f);
+
+    // Client animates the captured territory straight from the finish response;
+    // capped so a pathological track cannot blow up the message size
+    constexpr std::size_t kMaxClaimedHexesInResponse = 1000;
+    for (std::size_t i = 0; i < capture_result.claimed_hexes.size() && i < kMaxClaimedHexesInResponse; ++i)
+    {
+        response.add_claimed_hexes(capture_result.claimed_hexes[i]);
+    }
 
     co_return response;
 }

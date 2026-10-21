@@ -11,6 +11,8 @@ message Envelope {
   // Optional envelope metadata header
   string message_id = 1;        // Unique message tracking ID (UUID)
   int64 timestamp = 2;          // Envelope emission epoch timestamp in milliseconds
+  string correlation_id = 3;    // message_id of the request this message answers (WS replies are unordered)
+  uint32 protocol_version = 4;  // Envelope schema version, currently 1
 
   oneof payload {
     // Location batching telemetry
