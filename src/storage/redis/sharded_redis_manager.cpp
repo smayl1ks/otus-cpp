@@ -1,5 +1,6 @@
 
 #include "storage/redis/sharded_redis_manager.hpp"
+#include "gameplay/territory_conquest/zone_channel_helper.hpp"
 #include "logger/logger.hpp"
 
 namespace run::storage::redis
@@ -21,13 +22,41 @@ ShardedRedisManager::ShardedRedisManager(net::any_io_executor executor, RedisCon
         m_shards.push_back(std::move(producer));
     }
 
-    LOG_INFO("Configured ShardedRedisManager with {} shard(s) for base master '{}'", num_shards,
-             m_base_redis_config.master_name);
+    // Pub/Sub fleet: sharded list > single instance > legacy shard fallback
+    if (!m_base_redis_config.pubsub_hosts.empty())
+    {
+        m_publishers.reserve(m_base_redis_config.pubsub_hosts.size());
+        for (const auto& [host, port] : m_base_redis_config.pubsub_hosts)
+        {
+            RedisConfig pub_cfg = m_base_redis_config;
+            pub_cfg.pubsub_host = host;
+            pub_cfg.pubsub_port = port;
+            m_publishers.push_back(std::make_shared<RedisPublisher>(executor, pub_cfg));
+        }
+    }
+    else if (!m_base_redis_config.pubsub_host.empty())
+    {
+        m_publishers.push_back(std::make_shared<RedisPublisher>(executor, m_base_redis_config));
+    }
+
+    LOG_INFO("Configured ShardedRedisManager with {} shard(s) for base master '{}'{}", num_shards,
+             m_base_redis_config.master_name,
+             m_publishers.empty() ? ""
+             : m_publishers.size() == 1
+                 ? fmt::format(" and dedicated pub/sub instance at {}:{}",
+                               m_base_redis_config.pubsub_host, m_base_redis_config.pubsub_port)
+                 : fmt::format(" and dedicated pub/sub fleet of {} instance(s)",
+                               m_publishers.size()));
 }
 
 net::awaitable<bool> ShardedRedisManager::InitializeAsync()
 {
     LOG_INFO("Initializing all {} Redis Sentinel shard(s)...", m_shards.size());
+
+    for (auto& publisher : m_publishers)
+    {
+        publisher->Start();
+    }
 
     bool all_ok = true;
     for (std::size_t i = 0; i < m_shards.size(); ++i)
@@ -48,6 +77,11 @@ net::awaitable<bool> ShardedRedisManager::InitializeAsync()
 
 void ShardedRedisManager::Stop()
 {
+    for (auto& publisher : m_publishers)
+    {
+        publisher->Stop();
+    }
+
     for (auto& shard : m_shards)
     {
         if (shard)
@@ -126,10 +160,47 @@ net::awaitable<std::optional<uint64_t>> ShardedRedisManager::ValidateWsTicketAsy
     co_return co_await m_shards[shard_idx]->GetRedisPool()->ValidateWsTicketAsync(ticket);
 }
 
+std::size_t ShardedRedisManager::GetPublisherIndex(const std::string& channel) const noexcept
+{
+    if (m_publishers.size() <= 1)
+    {
+        return 0;
+    }
+
+    // Zone channels route by the H3 cell itself so that all publishers and all
+    // subscriber fleets agree on where a zone lives; everything else by name
+    if (channel.starts_with("kazan:zone:"))
+    {
+        const uint64_t zone = gameplay::territory_conquest::ZoneChannelHelper::ExtractH3Zone(channel);
+        return static_cast<std::size_t>(Hash64(zone)) % m_publishers.size();
+    }
+    return static_cast<std::size_t>(HashString(channel)) % m_publishers.size();
+}
+
 net::awaitable<bool> ShardedRedisManager::PublishAsync(const std::string& channel, const std::string& payload)
 {
+    // Dedicated radar fleet first; fall back to shard masters in legacy mode
+    if (!m_publishers.empty())
+    {
+        co_return co_await m_publishers[GetPublisherIndex(channel)]->PublishAsync(channel, payload);
+    }
+
     const std::size_t shard_idx = GetShardIndex(channel);
     co_return co_await m_shards[shard_idx]->GetRedisPool()->PublishAsync(channel, payload);
+}
+
+std::shared_ptr<RedisPublisher> ShardedRedisManager::GetPublisher(std::size_t index) const noexcept
+{
+    if (index < m_publishers.size())
+    {
+        return m_publishers[index];
+    }
+    return nullptr;
+}
+
+std::size_t ShardedRedisManager::GetPublisherCount() const noexcept
+{
+    return m_publishers.size();
 }
 
 net::awaitable<bool> ShardedRedisManager::SetAsync(const std::string& key, const std::string& value,
@@ -137,6 +208,14 @@ net::awaitable<bool> ShardedRedisManager::SetAsync(const std::string& key, const
 {
     const std::size_t shard_idx = GetShardIndex(key);
     co_return co_await m_shards[shard_idx]->GetRedisPool()->SetAsync(key, value, ttl);
+}
+
+net::awaitable<std::optional<bool>> ShardedRedisManager::SetNxAsync(const std::string& key,
+                                                                     const std::string& value,
+                                                                     std::chrono::seconds ttl)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->SetNxAsync(key, value, ttl);
 }
 
 net::awaitable<std::optional<std::string>> ShardedRedisManager::GetAsync(const std::string& key)
@@ -202,6 +281,13 @@ net::awaitable<std::unordered_map<std::string, std::string>> ShardedRedisManager
 {
     const std::size_t shard_idx = GetShardIndex(key);
     co_return co_await m_shards[shard_idx]->GetRedisPool()->HGetAllAsync(key);
+}
+
+net::awaitable<std::vector<std::string>> ShardedRedisManager::LRangeAsync(const std::string& key, int64_t start,
+                                                                          int64_t stop)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->LRangeAsync(key, start, stop);
 }
 
 std::size_t ShardedRedisManager::GetShardIndex(uint64_t key) const noexcept

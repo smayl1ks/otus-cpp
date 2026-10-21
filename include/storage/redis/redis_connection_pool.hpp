@@ -83,6 +83,10 @@ public:
 
     // Generic key-value helpers
     net::awaitable<bool> SetAsync(const std::string& key, const std::string& value, std::chrono::seconds ttl);
+
+    /// SET NX EX: true = acquired, false = key existed (duplicate), nullopt = connectivity/command error
+    net::awaitable<std::optional<bool>> SetNxAsync(const std::string& key, const std::string& value,
+                                                   std::chrono::seconds ttl);
     net::awaitable<std::optional<std::string>> GetAsync(const std::string& key);
     net::awaitable<bool> DeleteAsync(const std::string& key);
     net::awaitable<bool> ExistsAsync(const std::string& key);
@@ -98,6 +102,9 @@ public:
                                            std::optional<std::chrono::seconds> ttl = std::nullopt);
     net::awaitable<std::optional<std::string>> HGetAsync(const std::string& key, const std::string& field);
     net::awaitable<std::unordered_map<std::string, std::string>> HGetAllAsync(const std::string& key);
+
+    // List helpers (full track retrieval for finish-time capture resolve)
+    net::awaitable<std::vector<std::string>> LRangeAsync(const std::string& key, int64_t start, int64_t stop);
 
     // Observability and state queries
     bool IsConnected() const noexcept;

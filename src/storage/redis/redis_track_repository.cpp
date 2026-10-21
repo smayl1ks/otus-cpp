@@ -116,8 +116,6 @@ RedisTrackRepository::GetActiveRunStatsAsync(const std::string& session_id)
             stats.start_timestamp = std::stoll(fields["start_timestamp"]);
         if (fields.count("distance_meters"))
             stats.distance_meters = std::stod(fields["distance_meters"]);
-        if (fields.count("uram_points"))
-            stats.uram_points = std::stoi(fields["uram_points"]);
         if (fields.count("points_count"))
             stats.points_count = std::stoi(fields["points_count"]);
         if (fields.count("status"))
@@ -166,6 +164,60 @@ boost::asio::awaitable<bool> RedisTrackRepository::FinalizeActiveRunAsync(const 
     }
 
     co_return true;
+}
+
+boost::asio::awaitable<std::vector<gameplay::workout_tracking::RunPoint>>
+RedisTrackRepository::GetTrackAsync(const std::string& session_id)
+{
+    std::vector<gameplay::workout_tracking::RunPoint> track;
+    if (!m_redis_manager || session_id.empty())
+    {
+        co_return track;
+    }
+
+    uint64_t run_id = 0;
+    try
+    {
+        run_id = std::stoull(session_id);
+    }
+    catch (const std::exception&)
+    {
+        LOG_WARN("GetTrackAsync: non-numeric session_id '{}'", session_id);
+        co_return track;
+    }
+
+    const std::string track_key = fmt::format("run:track:{}", run_id);
+    const auto raw_points = co_await m_redis_manager->LRangeAsync(track_key, 0, -1);
+
+    track.reserve(raw_points.size());
+    for (const auto& raw : raw_points)
+    {
+        // Format: "lat,lon,speed,ts" (speed in m/s, ts in epoch ms)
+        const auto lat_end = raw.find(',');
+        const auto lon_end = lat_end == std::string::npos ? std::string::npos : raw.find(',', lat_end + 1);
+        const auto speed_end = lon_end == std::string::npos ? std::string::npos : raw.find(',', lon_end + 1);
+        if (speed_end == std::string::npos)
+        {
+            continue;
+        }
+
+        try
+        {
+            gameplay::workout_tracking::RunPoint p;
+            p.coord.latitude = std::stod(raw.substr(0, lat_end));
+            p.coord.longitude = std::stod(raw.substr(lat_end + 1, lon_end - lat_end - 1));
+            p.speed_ms = std::stof(raw.substr(lon_end + 1, speed_end - lon_end - 1));
+            p.recorded_at = std::chrono::system_clock::time_point(
+                std::chrono::milliseconds(std::stoll(raw.substr(speed_end + 1))));
+            track.push_back(std::move(p));
+        }
+        catch (const std::exception&)
+        {
+            LOG_WARN("GetTrackAsync: skipping malformed track point '{}'", raw);
+        }
+    }
+
+    co_return track;
 }
 
 } // namespace run::storage::redis

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "storage/redis/redis_publisher.hpp"
 #include "storage/redis/resilient_redis_producer.hpp"
 #include "storage/redis/sentinel_config.hpp"
 
@@ -40,11 +41,21 @@ public:
                                    std::chrono::seconds ttl = std::chrono::seconds(30));
     net::awaitable<std::optional<uint64_t>> ValidateWsTicketAsync(const std::string& ticket);
 
-    // Pub/Sub Broadcast (sharded by channel name)
+    // Pub/Sub Broadcast: dedicated radar fleet (client-side channel sharding by
+    // h3_zone) when configured, single pub/sub instance, or legacy sharded
+    // masters fallback
     net::awaitable<bool> PublishAsync(const std::string& channel, const std::string& payload);
+
+    std::shared_ptr<RedisPublisher> GetPublisher(std::size_t index = 0) const noexcept;
+    std::size_t GetPublisherCount() const noexcept;
+
+    // Same routing rule as PublishAsync: channel -> publisher index
+    std::size_t GetPublisherIndex(const std::string& channel) const noexcept;
 
     // Generic key-value helpers
     net::awaitable<bool> SetAsync(const std::string& key, const std::string& value, std::chrono::seconds ttl);
+    net::awaitable<std::optional<bool>> SetNxAsync(const std::string& key, const std::string& value,
+                                                   std::chrono::seconds ttl);
     net::awaitable<std::optional<std::string>> GetAsync(const std::string& key);
     net::awaitable<bool> DeleteAsync(const std::string& key);
     net::awaitable<bool> ExistsAsync(const std::string& key);
@@ -60,6 +71,9 @@ public:
                                            std::optional<std::chrono::seconds> ttl = std::nullopt);
     net::awaitable<std::optional<std::string>> HGetAsync(const std::string& key, const std::string& field);
     net::awaitable<std::unordered_map<std::string, std::string>> HGetAllAsync(const std::string& key);
+
+    // List helpers (track retrieval)
+    net::awaitable<std::vector<std::string>> LRangeAsync(const std::string& key, int64_t start, int64_t stop);
 
     void InvalidateTtl(uint64_t run_id);
 
@@ -103,6 +117,7 @@ private:
     BufferConfig m_buffer_config;
 
     std::vector<std::shared_ptr<ResilientRedisProducer>> m_shards;
+    std::vector<std::shared_ptr<RedisPublisher>> m_publishers;
 };
 
 } // namespace run::storage::redis

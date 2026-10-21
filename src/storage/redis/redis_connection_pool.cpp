@@ -29,8 +29,8 @@ void RedisConnectionPool::ConnectToMaster(const std::string& host, const std::st
 
     if (!m_connections.empty())
     {
-        LOG_INFO("Closing {} previous connection(s) to Redis master {}:{}",
-                 m_connections.size(), m_current_host, m_current_port);
+        LOG_INFO("Closing {} previous connection(s) to Redis master {}:{}", m_connections.size(), m_current_host,
+                 m_current_port);
         for (auto& conn : m_connections)
         {
             if (conn)
@@ -111,9 +111,8 @@ std::size_t RedisConnectionPool::GetPoolSize() const noexcept
 bool RedisConnectionPool::ShouldRefreshTtl(uint64_t run_id)
 {
     const auto now = std::chrono::steady_clock::now();
-    const auto interval = m_config.ttl_refresh_interval.count() > 0
-                              ? m_config.ttl_refresh_interval
-                              : std::chrono::seconds(30);
+    const auto interval =
+        m_config.ttl_refresh_interval.count() > 0 ? m_config.ttl_refresh_interval : std::chrono::seconds(30);
 
     std::lock_guard lock(m_ttl_mutex);
     auto it = m_last_ttl_refresh.find(run_id);
@@ -194,8 +193,9 @@ net::awaitable<bool> RedisConnectionPool::PushTrackPointAsync(uint64_t run_id, d
         req.push("EXPIRE", track_key, "86400");
         const std::string active_key = fmt::format("run:active:{}", run_id);
         req.push("EXPIRE", active_key, "86400");
-        const auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+        const auto now_sec =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
         req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
     }
 
@@ -232,7 +232,7 @@ net::awaitable<bool> RedisConnectionPool::UpdateActiveRunStatsAsync(uint64_t run
     }
     if (delta_points > 0)
     {
-        req.push("HINCRBY", active_key, "uram_points", std::to_string(delta_points));
+        req.push("HINCRBY", active_key, "points_count", std::to_string(delta_points));
     }
 
     // Refresh TTL periodically if due
@@ -241,8 +241,9 @@ net::awaitable<bool> RedisConnectionPool::UpdateActiveRunStatsAsync(uint64_t run
         req.push("EXPIRE", active_key, "86400");
         const std::string track_key = fmt::format("run:track:{}", run_id);
         req.push("EXPIRE", track_key, "86400");
-        const auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+        const auto now_sec =
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
         req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
     }
 
@@ -291,8 +292,8 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
     }
 
     boost::redis::request req;
-    const auto now_sec = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto now_sec =
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     for (const auto& [run_id, data] : grouped)
     {
@@ -307,7 +308,7 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
         }
         if (data.total_delta_points > 0)
         {
-            req.push("HINCRBY", active_key, "uram_points", std::to_string(data.total_delta_points));
+            req.push("HINCRBY", active_key, "points_count", std::to_string(data.total_delta_points));
         }
 
         // Only emit EXPIRE once every 30-60 seconds per run
@@ -456,6 +457,36 @@ net::awaitable<bool> RedisConnectionPool::SetAsync(const std::string& key, const
     co_return !ec;
 }
 
+net::awaitable<std::optional<bool>> RedisConnectionPool::SetNxAsync(const std::string& key,
+                                                                     const std::string& value,
+                                                                     std::chrono::seconds ttl)
+{
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return std::nullopt;
+    }
+
+    boost::redis::request req;
+    req.push("SET", key, value, "EX", std::to_string(ttl.count()), "NX");
+
+    boost::redis::generic_response resp;
+    boost::system::error_code ec;
+
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+
+    if (ec)
+    {
+        LOG_WARN("SETNX {} failed: {}", key, ec.message());
+        co_return std::nullopt;
+    }
+
+    // SET NX replies +OK on acquire and nil when the key already exists
+    const bool acquired = !resp.value().empty() && !resp.value().front().value.empty();
+    co_return acquired;
+}
+
 net::awaitable<std::optional<std::string>> RedisConnectionPool::GetAsync(const std::string& key)
 {
     auto conn = GetConnection();
@@ -564,10 +595,10 @@ net::awaitable<bool> RedisConnectionPool::HSetAsync(const std::string& key, cons
     co_return !ec;
 }
 
-net::awaitable<bool> RedisConnectionPool::HSetMultipleAsync(
-    const std::string& key,
-    const std::vector<std::pair<std::string, std::string>>& field_values,
-    std::optional<std::chrono::seconds> ttl)
+net::awaitable<bool>
+RedisConnectionPool::HSetMultipleAsync(const std::string& key,
+                                       const std::vector<std::pair<std::string, std::string>>& field_values,
+                                       std::optional<std::chrono::seconds> ttl)
 {
     std::vector<std::string> flattened;
     flattened.reserve(field_values.size() * 2);
@@ -580,10 +611,9 @@ net::awaitable<bool> RedisConnectionPool::HSetMultipleAsync(
     co_return co_await HSetMultipleAsync(key, flattened, ttl);
 }
 
-net::awaitable<bool> RedisConnectionPool::HSetMultipleAsync(
-    const std::string& key,
-    const std::vector<std::string>& flattened_field_values,
-    std::optional<std::chrono::seconds> ttl)
+net::awaitable<bool> RedisConnectionPool::HSetMultipleAsync(const std::string& key,
+                                                            const std::vector<std::string>& flattened_field_values,
+                                                            std::optional<std::chrono::seconds> ttl)
 {
     auto conn = GetConnection();
     if (!conn || flattened_field_values.empty())
@@ -670,6 +700,39 @@ net::awaitable<std::unordered_map<std::string, std::string>> RedisConnectionPool
         {
             result[vec[i]] = vec[i + 1];
         }
+    }
+
+    co_return result;
+}
+
+net::awaitable<std::vector<std::string>> RedisConnectionPool::LRangeAsync(const std::string& key, int64_t start,
+                                                                          int64_t stop)
+{
+    std::vector<std::string> result;
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return result;
+    }
+
+    boost::redis::request req;
+    req.push("LRANGE", key, std::to_string(start), std::to_string(stop));
+
+    boost::redis::response<std::vector<std::string>> resp;
+    boost::system::error_code ec;
+
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+
+    if (ec)
+    {
+        LOG_WARN("LRANGE {} failed: {}", key, ec.message());
+        co_return result;
+    }
+
+    if (const auto& vec_opt = std::get<0>(resp); vec_opt.has_value())
+    {
+        result = std::move(vec_opt.value());
     }
 
     co_return result;

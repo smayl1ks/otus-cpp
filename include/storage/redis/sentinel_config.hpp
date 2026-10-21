@@ -27,6 +27,16 @@ struct RedisConfig
     std::size_t num_shards{1};
     std::size_t pool_size{2};
     std::chrono::seconds ttl_refresh_interval{30};
+
+    // Dedicated Pub/Sub fleet (radar). Priority:
+    //   1. pubsub_hosts non-empty  -> client-side sharded fleet, channel routed
+    //                                 by hash(h3_zone) % hosts.size()
+    //   2. pubsub_host non-empty   -> single dedicated instance
+    //   3. both empty              -> legacy mode, publish via sharded masters
+    std::vector<std::pair<std::string, std::string>> pubsub_hosts; // parsed "host", "port"
+    std::string pubsub_host;
+    std::string pubsub_port{"6379"};
+    std::string pubsub_password;
 };
 
 struct BufferConfig
@@ -98,6 +108,13 @@ inline std::vector<SentinelNode> ParseSentinelNodes(std::string_view sentinels_s
 
     return nodes;
 }
+
+/**
+ * @brief Parses a comma-separated list of pub/sub instance addresses.
+ * Each entry is "host[:port]"; missing port falls back to default_port.
+ */
+std::vector<std::pair<std::string, std::string>> ParsePubSubHosts(std::string_view hosts_string,
+                                                                  std::string_view default_port = "6379");
 
 /**
  * @brief Overrides RedisConfig values with environment variables if present.

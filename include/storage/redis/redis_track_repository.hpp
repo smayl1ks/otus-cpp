@@ -32,6 +32,9 @@ public:
 
     boost::asio::awaitable<bool> FinalizeActiveRunAsync(const std::string& session_id, int64_t user_id) override;
 
+    boost::asio::awaitable<std::vector<gameplay::workout_tracking::RunPoint>>
+    GetTrackAsync(const std::string& session_id) override;
+
 private:
     std::shared_ptr<ShardedRedisManager> m_redis_manager;
 };

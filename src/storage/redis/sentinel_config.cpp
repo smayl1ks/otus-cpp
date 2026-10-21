@@ -11,6 +11,37 @@ namespace run::storage::redis
 
 namespace po = boost::program_options;
 
+std::vector<std::pair<std::string, std::string>> ParsePubSubHosts(std::string_view hosts_string,
+                                                                  std::string_view default_port)
+{
+    std::vector<std::pair<std::string, std::string>> hosts;
+    std::stringstream ss{std::string(hosts_string)};
+    std::string item;
+
+    while (std::getline(ss, item, ','))
+    {
+        const auto start = item.find_first_not_of(" \t\r\n");
+        const auto end = item.find_last_not_of(" \t\r\n");
+        if (start == std::string::npos)
+        {
+            continue;
+        }
+        item = item.substr(start, end - start + 1);
+
+        const auto colon_pos = item.rfind(':');
+        if (colon_pos == std::string::npos)
+        {
+            hosts.emplace_back(item, std::string(default_port));
+        }
+        else
+        {
+            hosts.emplace_back(item.substr(0, colon_pos), item.substr(colon_pos + 1));
+        }
+    }
+
+    return hosts;
+}
+
 RedisConfig LoadRedisConfigFromEnv(RedisConfig base)
 {
     if (const char* env_num_shards = std::getenv("REDIS_NUM_SHARDS"))
@@ -92,6 +123,34 @@ RedisConfig LoadRedisConfigFromEnv(RedisConfig base)
         {
             LOG_WARN("Failed to parse REDIS_TTL_REFRESH_INTERVAL_SEC: '{}'", env_ttl_refresh);
         }
+    }
+
+    if (const char* env_pubsub_hosts = std::getenv("REDIS_PUBSUB_HOSTS"))
+    {
+        if (env_pubsub_hosts[0] != '\0')
+        {
+            auto parsed = ParsePubSubHosts(env_pubsub_hosts, base.pubsub_port);
+            base.pubsub_hosts.assign(std::make_move_iterator(parsed.begin()),
+                                     std::make_move_iterator(parsed.end()));
+        }
+    }
+
+    if (const char* env_pubsub_host = std::getenv("REDIS_PUBSUB_HOST"))
+    {
+        base.pubsub_host = env_pubsub_host;
+    }
+
+    if (const char* env_pubsub_port = std::getenv("REDIS_PUBSUB_PORT"))
+    {
+        if (env_pubsub_port[0] != '\0')
+        {
+            base.pubsub_port = env_pubsub_port;
+        }
+    }
+
+    if (const char* env_pubsub_pass = std::getenv("REDIS_PUBSUB_PASSWORD"))
+    {
+        base.pubsub_password = env_pubsub_pass;
     }
 
     return base;
@@ -178,6 +237,10 @@ std::pair<RedisConfig, BufferConfig> LoadStorageConfig(const std::string& config
                 ("redis.connection_timeout_ms", po::value<uint64_t>(), "Connection timeout in ms")
                 ("redis.command_timeout_ms", po::value<uint64_t>(), "Command timeout in ms")
                 ("redis.ttl_refresh_interval_sec", po::value<uint64_t>(), "TTL refresh interval in seconds")
+                ("redis.pubsub_host", po::value<std::string>(), "Dedicated pub/sub instance host (empty = shard fallback)")
+                ("redis.pubsub_port", po::value<std::string>(), "Dedicated pub/sub instance port")
+                ("redis.pubsub_hosts", po::value<std::string>(), "Comma-separated pub/sub fleet hosts host[:port],...")
+                ("redis.pubsub_password", po::value<std::string>(), "Dedicated pub/sub instance password")
                 ("buffer.in_memory_capacity", po::value<std::size_t>(), "In-memory buffer capacity")
                 ("buffer.drain_batch_size", po::value<std::size_t>(), "Drain batch size");
 
@@ -222,6 +285,25 @@ std::pair<RedisConfig, BufferConfig> LoadStorageConfig(const std::string& config
                 {
                     redis_cfg.ttl_refresh_interval =
                         std::chrono::seconds(vm["redis.ttl_refresh_interval_sec"].as<uint64_t>());
+                }
+                if (vm.count("redis.pubsub_hosts"))
+                {
+                    auto parsed = ParsePubSubHosts(vm["redis.pubsub_hosts"].as<std::string>(),
+                                                   redis_cfg.pubsub_port);
+                    redis_cfg.pubsub_hosts.assign(std::make_move_iterator(parsed.begin()),
+                                                  std::make_move_iterator(parsed.end()));
+                }
+                if (vm.count("redis.pubsub_host"))
+                {
+                    redis_cfg.pubsub_host = vm["redis.pubsub_host"].as<std::string>();
+                }
+                if (vm.count("redis.pubsub_port"))
+                {
+                    redis_cfg.pubsub_port = vm["redis.pubsub_port"].as<std::string>();
+                }
+                if (vm.count("redis.pubsub_password"))
+                {
+                    redis_cfg.pubsub_password = vm["redis.pubsub_password"].as<std::string>();
                 }
                 if (vm.count("buffer.in_memory_capacity"))
                 {

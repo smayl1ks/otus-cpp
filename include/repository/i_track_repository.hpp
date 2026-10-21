@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <vector>
 #include <string>
 
 namespace run::repository
@@ -18,7 +19,6 @@ struct ActiveRunStats
     int64_t start_timestamp{0};
     double distance_meters{0.0};
     int32_t points_count{0};
-    int32_t uram_points{0};
     std::string status{"active"};
 };
 
@@ -44,6 +44,10 @@ public:
     virtual boost::asio::awaitable<bool> CheckActiveSessionExistsAsync(int64_t user_id) = 0;
 
     virtual boost::asio::awaitable<bool> FinalizeActiveRunAsync(const std::string& session_id, int64_t user_id) = 0;
+
+    /// Full stored track (lat,lon,speed,ts list), used for finish-time capture resolve
+    virtual boost::asio::awaitable<std::vector<gameplay::workout_tracking::RunPoint>>
+    GetTrackAsync(const std::string& session_id) = 0;
 };
 
 } // namespace run::repository

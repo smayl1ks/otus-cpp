@@ -33,16 +33,45 @@ void RedisPubSubWorker::Start()
     }
     m_is_running = true;
 
-    net::co_spawn(m_executor, RunSubscriberLoopAsync(), net::detached);
+    // One subscriber loop per fleet instance; in legacy Sentinel mode the list
+    // holds an empty address and the loop resolves the master on each retry
+    for (const auto& [host, port] : ResolveAddresses())
+    {
+        net::co_spawn(m_executor, RunSubscriberLoopAsync(host, port), net::detached);
+    }
+}
+
+std::vector<std::pair<std::string, std::string>> RedisPubSubWorker::ResolveAddresses() const
+{
+    std::vector<std::pair<std::string, std::string>> addresses;
+
+    if (!m_config.pubsub_hosts.empty())
+    {
+        addresses.assign(m_config.pubsub_hosts.begin(), m_config.pubsub_hosts.end());
+    }
+    else if (!m_config.pubsub_host.empty())
+    {
+        addresses.emplace_back(m_config.pubsub_host,
+                               m_config.pubsub_port.empty() ? "6379" : m_config.pubsub_port);
+    }
+    else
+    {
+        addresses.emplace_back("", ""); // sentinel-resolved legacy mode
+    }
+
+    return addresses;
 }
 
 void RedisPubSubWorker::Stop()
 {
     m_is_running = false;
     std::lock_guard lock(m_mutex);
-    if (m_connection)
+    for (auto& conn : m_connections)
     {
-        m_connection->cancel();
+        if (conn)
+        {
+            conn->cancel();
+        }
     }
 }
 
@@ -56,9 +85,12 @@ void RedisPubSubWorker::SetPattern(std::string pattern)
 {
     std::lock_guard lock(m_mutex);
     m_pattern = std::move(pattern);
-    if (m_connection)
+    for (auto& conn : m_connections)
     {
-        m_connection->cancel();
+        if (conn)
+        {
+            conn->cancel();
+        }
     }
 }
 
@@ -72,29 +104,29 @@ void RedisPubSubWorker::Reconnect(const std::string& host, const std::string& po
 {
     LOG_INFO("RedisPubSubWorker: Sentinel master failover to {}:{}. Re-subscribing...", host, port);
     std::lock_guard lock(m_mutex);
-    m_current_host = host;
-    m_current_port = port;
-    if (m_connection)
+    for (auto& conn : m_connections)
     {
-        m_connection->cancel();
+        if (conn)
+        {
+            conn->cancel();
+        }
     }
 }
 
-net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync()
+net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync(std::string host, std::string port)
 {
+    const bool direct_address = !host.empty();
+    const bool use_dedicated = !m_config.pubsub_host.empty() || !m_config.pubsub_hosts.empty();
+
     while (m_is_running)
     {
-        std::string host;
-        std::string port;
         std::string pattern;
         {
             std::lock_guard lock(m_mutex);
-            host = m_current_host;
-            port = m_current_port;
             pattern = m_pattern;
         }
 
-        if (host.empty() && m_sentinel_monitor)
+        if (!direct_address && m_sentinel_monitor)
         {
             const auto [m_host, m_port] = m_sentinel_monitor->GetCurrentMaster();
             host = m_host;
@@ -113,15 +145,18 @@ net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync()
         auto conn = std::make_shared<boost::redis::connection>(m_executor);
         {
             std::lock_guard lock(m_mutex);
-            m_connection = conn;
+            m_connections.push_back(conn);
         }
 
         boost::redis::config cfg;
         cfg.addr.host = host;
         cfg.addr.port = port;
-        if (!m_config.password.empty())
+        if (const auto& password =
+                use_dedicated ? m_config.pubsub_password.empty() ? m_config.password : m_config.pubsub_password
+                              : m_config.password;
+            !password.empty())
         {
-            cfg.password = m_config.password;
+            cfg.password = password;
         }
 
         conn->async_run(cfg, net::consign(net::detached, conn));
@@ -139,6 +174,11 @@ net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync()
             LOG_WARN("RedisPubSubWorker failed to subscribe to pattern '{}' on {}:{}: {}", pattern, host, port,
                      ec.message());
             conn->cancel();
+
+            {
+                std::lock_guard lock(m_mutex);
+                std::erase(m_connections, conn);
+            }
 
             net::steady_timer timer(co_await net::this_coro::executor);
             timer.expires_after(std::chrono::seconds(2));
@@ -193,11 +233,23 @@ net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync()
 
         conn->cancel();
 
+        {
+            std::lock_guard lock(m_mutex);
+            std::erase(m_connections, conn);
+        }
+
         if (m_is_running)
         {
             net::steady_timer timer(co_await net::this_coro::executor);
             timer.expires_after(std::chrono::seconds(1));
             co_await timer.async_wait(net::use_awaitable);
+        }
+
+        if (!direct_address)
+        {
+            // Sentinel mode: re-resolve the master on the next iteration
+            host.clear();
+            port.clear();
         }
     }
 }

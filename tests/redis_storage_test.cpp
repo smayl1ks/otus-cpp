@@ -6,6 +6,7 @@
 #include "storage/redis/drain_worker.hpp"
 #include "storage/redis/i_batch_flusher.hpp"
 #include "storage/redis/redis_pub_sub_worker.hpp"
+#include "storage/redis/redis_publisher.hpp"
 #include "storage/redis/redis_track_repository.hpp"
 #include "storage/redis/resilient_redis_producer.hpp"
 #include "storage/redis/sentinel_config.hpp"
@@ -82,6 +83,168 @@ TEST(RedisConfigTest, LoadStorageConfig_FromFileAndEnvOverrides)
     unsetenv("REDIS_TTL_REFRESH_INTERVAL_SEC");
     unsetenv("BUFFER_IN_MEMORY_CAPACITY");
     unsetenv("BUFFER_DRAIN_BATCH_SIZE");
+}
+
+TEST(RedisConfigTest, PubSubInstance_ConfigAndEnvOverrides)
+{
+    // Default: no dedicated instance (legacy shard fallback)
+    RedisConfig default_cfg;
+    EXPECT_TRUE(default_cfg.pubsub_host.empty());
+    EXPECT_TRUE(default_cfg.pubsub_hosts.empty());
+    EXPECT_EQ(default_cfg.pubsub_port, "6379");
+
+    setenv("REDIS_PUBSUB_HOSTS", "redis_pubsub_0:6379, redis_pubsub_1:6380, redis_pubsub_2", 1);
+    setenv("REDIS_PUBSUB_PASSWORD", "pubsub_secret", 1);
+
+    const auto cfg = LoadRedisConfigFromEnv();
+    ASSERT_EQ(cfg.pubsub_hosts.size(), 3u);
+    EXPECT_EQ(cfg.pubsub_hosts[0], std::make_pair(std::string{"redis_pubsub_0"}, std::string{"6379"}));
+    EXPECT_EQ(cfg.pubsub_hosts[1], std::make_pair(std::string{"redis_pubsub_1"}, std::string{"6380"}));
+    EXPECT_EQ(cfg.pubsub_hosts[2], std::make_pair(std::string{"redis_pubsub_2"}, std::string{"6379"}));
+    EXPECT_EQ(cfg.pubsub_password, "pubsub_secret");
+
+    unsetenv("REDIS_PUBSUB_HOSTS");
+    unsetenv("REDIS_PUBSUB_PASSWORD");
+}
+
+TEST(RedisConfigTest, ParsePubSubHosts_SingleAndMultiple)
+{
+    const auto hosts = ParsePubSubHosts("a:7000, b,  10.0.0.1:7001 ,");
+    ASSERT_EQ(hosts.size(), 3u);
+    EXPECT_EQ(hosts[0], std::make_pair(std::string{"a"}, std::string{"7000"}));
+    EXPECT_EQ(hosts[1], std::make_pair(std::string{"b"}, std::string{"6379"})); // default port
+    EXPECT_EQ(hosts[2], std::make_pair(std::string{"10.0.0.1"}, std::string{"7001"}));
+
+    EXPECT_TRUE(ParsePubSubHosts("").empty());
+    EXPECT_TRUE(ParsePubSubHosts("  ,  ").empty());
+}
+
+TEST(RedisConnectionPoolTest, SetNxAsync_DegradedReturnsUnknown)
+{
+    boost::asio::io_context ioc;
+
+    RedisConfig cfg{.master_name = "mymaster", .num_shards = 1};
+    RedisConnectionPool pool(ioc.get_executor(), cfg);
+    // Not connected: outcome must be "unknown", not "duplicate" (false) -
+    // the caller proceeds on nullopt, duplicate detection is best-effort
+
+    bool done = false;
+    std::optional<bool> result;
+    boost::asio::co_spawn(
+        ioc,
+        [&]() -> boost::asio::awaitable<void>
+        {
+            result = co_await pool.SetNxAsync("run:batch:1:u", "1", std::chrono::hours(1));
+            done = true;
+            co_return;
+        },
+        boost::asio::detached);
+    ioc.run();
+
+    EXPECT_TRUE(done);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(RedisPublisherTest, UnconfiguredPublisher_IdlesAndFailsPublish)
+{
+    boost::asio::io_context ioc;
+
+    RedisConfig cfg; // pubsub_host empty
+    RedisPublisher publisher(ioc.get_executor(), cfg);
+
+    EXPECT_FALSE(publisher.IsConfigured());
+    EXPECT_FALSE(publisher.IsConnected());
+
+    publisher.Start(); // must not spawn anything, must not crash
+
+    bool publish_failed = false;
+    boost::asio::co_spawn(
+        ioc,
+        [&]() -> boost::asio::awaitable<void>
+        {
+            publish_failed = !(co_await publisher.PublishAsync("kazan:zone:1:radar:public", "{}"));
+            co_return;
+        },
+        boost::asio::detached);
+    ioc.run();
+
+    EXPECT_TRUE(publish_failed);
+}
+
+TEST(ShardedRedisManagerTest, PubSubInstanceRouting_PrefersDedicatedInstance)
+{
+    boost::asio::io_context ioc;
+
+    RedisConfig redis_cfg{
+        .master_name = "mymaster",
+        .sentinels = {{"127.0.0.1", "9999"}},
+        .num_shards = 2,
+        .pubsub_host = "127.0.0.1",
+        .pubsub_port = "6390",
+    };
+
+    ShardedRedisManager manager(ioc.get_executor(), redis_cfg, BufferConfig{});
+
+    ASSERT_EQ(manager.GetPublisherCount(), 1u);
+    ASSERT_NE(manager.GetPublisher(), nullptr);
+    EXPECT_TRUE(manager.GetPublisher()->IsConfigured());
+    EXPECT_EQ(manager.GetPublisher()->GetAddress().first, "127.0.0.1");
+    EXPECT_EQ(manager.GetPublisher()->GetAddress().second, "6390");
+
+    // Not connected (nothing listens on 6390): publish is a no-op failure,
+    // but must not crash nor block
+    bool publish_done = false;
+    boost::asio::co_spawn(
+        ioc,
+        [&]() -> boost::asio::awaitable<void>
+        {
+            publish_done = true;
+            co_await manager.PublishAsync("kazan:zone:2:radar:public", "ping");
+            co_return;
+        },
+        boost::asio::detached);
+    ioc.run();
+    EXPECT_TRUE(publish_done);
+}
+
+TEST(ShardedRedisManagerTest, PubSubFleet_ChannelShardingByH3Zone)
+{
+    boost::asio::io_context ioc;
+
+    RedisConfig redis_cfg{
+        .master_name = "mymaster",
+        .sentinels = {{"127.0.0.1", "9999"}},
+        .num_shards = 1,
+        .pubsub_hosts = {{"127.0.0.1", "6390"}, {"127.0.0.1", "6391"}, {"127.0.0.1", "6392"}, {"127.0.0.1", "6393"}},
+    };
+
+    ShardedRedisManager manager(ioc.get_executor(), redis_cfg, BufferConfig{});
+
+    // Fleet of one publisher per configured instance
+    ASSERT_EQ(manager.GetPublisherCount(), 4u);
+    for (std::size_t i = 0; i < manager.GetPublisherCount(); ++i)
+    {
+        ASSERT_NE(manager.GetPublisher(i), nullptr);
+        EXPECT_TRUE(manager.GetPublisher(i)->IsConfigured());
+    }
+    EXPECT_EQ(manager.GetPublisher(4), nullptr); // out of range
+
+    // Zone channels route deterministically: same zone -> same publisher
+    const std::string zone_a = "kazan:zone:8849adbd43:radar:public";
+    const std::string zone_b = "kazan:zone:8849adbd47:radar:team:3";
+    EXPECT_EQ(manager.GetPublisherIndex(zone_a), manager.GetPublisherIndex(zone_a));
+    EXPECT_EQ(manager.GetPublisherIndex(zone_b), manager.GetPublisherIndex(zone_b));
+
+    // All valid publisher indices
+    std::set<std::size_t> distinct;
+    for (uint64_t zone = 1; zone < 500; ++zone)
+    {
+        const auto idx = manager.GetPublisherIndex(fmt::format("kazan:zone:{:x}:radar:public", zone));
+        EXPECT_LT(idx, 4u);
+        distinct.insert(idx);
+    }
+    // 500 zones spread over 4 instances - every instance should get traffic
+    EXPECT_EQ(distinct.size(), 4u);
 }
 
 TEST(RedisConnectionPoolTest, ConnectionPoolTopologyAndTTLThrottling)
@@ -635,7 +798,6 @@ public:
                                                 .start_timestamp = start_timestamp,
                                                 .distance_meters = 1500.0,
                                                 .points_count = 10,
-                                                .uram_points = 8,
                                                 .status = "active"};
         co_return true;
     }
@@ -657,6 +819,14 @@ public:
         finalized = true;
         co_return true;
     }
+
+    boost::asio::awaitable<std::vector<run::gameplay::workout_tracking::RunPoint>>
+    GetTrackAsync(const std::string& session_id) override
+    {
+        co_return stored_track;
+    }
+
+    std::vector<run::gameplay::workout_tracking::RunPoint> stored_track;
 };
 
 // TEST(RunServiceIntegrationTest, FullLifecycleWithDecoupledTrackRepository)

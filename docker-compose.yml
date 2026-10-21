@@ -11,6 +11,12 @@ services:
       - "${NGINX_SSL_PORT}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    ulimits:
+      nofile:
+        soft: 200000
+        hard: 200000
+    sysctls:
+      - net.core.somaxconn=65535
     depends_on:
       - cpp_node_1
       - cpp_node_2
@@ -28,6 +34,7 @@ services:
       - .env
     environment:
       - NODE_ID=node_1
+      - REDIS_PUBSUB_HOSTS=redis_pubsub_0:6379,redis_pubsub_1:6379
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,6 +54,7 @@ services:
       - .env
     environment:
       - NODE_ID=node_2
+      - REDIS_PUBSUB_HOSTS=redis_pubsub_0:6379,redis_pubsub_1:6379
     depends_on:
       postgres:
         condition: service_healthy
@@ -91,8 +99,46 @@ services:
         condition: service_healthy
     networks:
       - app_network
-    
-  # --- 3. REDIS SENTINEL ---
+
+  # --- 3. DEDICATED PUB/SUB FLEET (RADAR, CLIENT-SIDE CHANNEL SHARDING) ---
+  # Fire-and-forget broadcast bus for kazan:zone:* radar channels.
+  # Channels are sharded by hash(h3_zone) % N across the fleet;
+  # no persistence: pub/sub messages are ephemeral by design.
+  redis_pubsub_0:
+    image: redis:7-alpine
+    container_name: run_redis_pubsub_0
+    restart: always
+    command: redis-server /usr/local/etc/redis/pubsub.conf --requirepass ${REDIS_PUBSUB_PASSWORD:-${REDIS_PASSWORD}}
+    ports:
+      - "6381:6379"
+    volumes:
+      - ./redis/pubsub.conf:/usr/local/etc/redis/pubsub.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PUBSUB_PASSWORD:-${REDIS_PASSWORD}}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - app_network
+
+  redis_pubsub_1:
+    image: redis:7-alpine
+    container_name: run_redis_pubsub_1
+    restart: always
+    command: redis-server /usr/local/etc/redis/pubsub.conf --requirepass ${REDIS_PUBSUB_PASSWORD:-${REDIS_PASSWORD}}
+    ports:
+      - "6382:6379"
+    volumes:
+      - ./redis/pubsub.conf:/usr/local/etc/redis/pubsub.conf:ro
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PUBSUB_PASSWORD:-${REDIS_PASSWORD}}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - app_network
+
+  # --- 4. REDIS SENTINEL ---
   redis_sentinel:
     image: redis:7-alpine
     container_name: run_redis_sentinel

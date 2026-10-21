@@ -52,7 +52,14 @@ public:
     }
 
 private:
-    net::awaitable<void> RunSubscriberLoopAsync();
+    /**
+     * @brief Resolves the address list to subscribe to.
+     * Fleet (pubsub_hosts) > single instance (pubsub_host) > Sentinel master.
+     * Each fleet instance gets its own subscriber loop.
+     */
+    std::vector<std::pair<std::string, std::string>> ResolveAddresses() const;
+
+    net::awaitable<void> RunSubscriberLoopAsync(std::string host, std::string port);
     void Reconnect(const std::string& host, const std::string& port);
 
 private:
@@ -65,9 +72,7 @@ private:
     mutable std::mutex m_mutex;
     MessageCallback m_callback;
 
-    std::shared_ptr<boost::redis::connection> m_connection;
-    std::string m_current_host;
-    std::string m_current_port;
+    std::vector<std::shared_ptr<boost::redis::connection>> m_connections;
 };
 
 } // namespace run::storage::redis
