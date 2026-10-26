@@ -1,51 +1,70 @@
-#include "ip_filter.hpp"
-
 #include <iostream>
+#include <map>
 
-int main(int argc, char const *argv[])
+#include "allocator.hpp"
+#include "container.hpp"
+
+unsigned factorial(unsigned n)
 {
-    (void)argc;
-    (void)argv;
-
-    try
+    if (n <= 1)
     {
-        filter::IPPool ip_pool;
-        for(std::string line; std::getline(std::cin, line);)
-        {
-            if (line.empty())
-            {
-                continue;
-            }
-
-            filter::IP ip;
-
-            if (std::sscanf(line.c_str(), "%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]) == 4)
-            {
-                ip_pool.push_back(ip);
-            }
-        }
-
-        filter::reverse_lexicographically_sort(ip_pool);
-
-        filter::print_ip_pool(ip_pool);
-
-        filter::print_ip_pool(filter::filter(ip_pool, 1));
-
-        // TODO filter by first and second bytes and output
-        // ip = filter(46, 70)
-
-        filter::print_ip_pool(filter::filter(ip_pool, 46, 70));
-
-        // TODO filter by any byte and output
-        // ip = filter_any(46)
-
-        filter::print_ip_pool(filter::filter_any(ip_pool, 46));
-
+        return 1;
     }
-    catch(const std::exception &e)
+    return n * factorial(n - 1);
+}
+
+int main()
+{
+    std::map<int, int> m1;
+    for (int i = 0; i < 10; ++i)
     {
-        std::cerr << e.what() << std::endl;
+        m1[i] = factorial(i);
     }
+
+    std::map<int, int, std::less<int>, CustomAllocator<std::pair<const int, int>, 10>> m2;
+    for (int i = 0; i < 10; ++i)
+    {
+        m2[i] = factorial(i);
+    }
+
+    for (const auto& [k, v] : m1)
+    {
+        std::cout << k << ' ' << v << '\n';
+    }
+
+    std::cout << '\n';
+
+    for (const auto& [k, v] : m2)
+    {
+        std::cout << k << ' ' << v << '\n';
+    }
+
+    std::cout << '\n';
+
+    CustomContainer<int> c1;
+    for (int i = 0; i < 10; ++i)
+    {
+        c1.push(i);
+    }
+
+    CustomContainer<int, CustomAllocator<int, 10>> c2;
+    for (int i = 0; i < 10; ++i)
+    {
+        c2.push(i);
+    }
+
+    for (auto it = c1.begin(); it != c1.end(); ++it)
+    {
+        std::cout << *it << ' ';
+    }   
+    std::cout << '\n';
+
+    for (auto it = c2.begin(); it != c2.end(); ++it)
+    {
+        std::cout << *it << ' ';
+    }
+    
+    std::cout << '\n';
 
     return 0;
 }
