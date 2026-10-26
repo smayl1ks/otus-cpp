@@ -1,0 +1,10 @@
+PROJECT_NAME           = "print_ip"
+OUTPUT_DIRECTORY       = docs
+INPUT                  = include src
+FILE_PATTERNS          = *.h *.hpp *.cpp
+RECURSIVE              = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+EXTRACT_ALL            = YES
+HAVE_DOT               = YES
+DOT_IMAGE_FORMAT       = svg

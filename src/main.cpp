@@ -1,51 +1,20 @@
-#include "ip_filter.hpp"
+#include "print_ip.hpp"
 
-#include <iostream>
+#include <cstdint>
+#include <list>
+#include <string>
+#include <tuple>
+#include <vector>
 
-int main(int argc, char const *argv[])
-{
-    (void)argc;
-    (void)argv;
+int main() {
+  print_ip(int8_t{-1});
+  print_ip(int16_t{0});
+  print_ip(int32_t{2130706433});
+  print_ip(int64_t{8875824491850138409});
+  print_ip(std::string{"Hello, World!"});
+  print_ip(std::vector<int>{100, 200, 300, 400});
+  print_ip(std::list<short>{400, 300, 200, 100});
+  print_ip(std::make_tuple(123, 456, 789, 0));
 
-    try
-    {
-        filter::IPPool ip_pool;
-        for(std::string line; std::getline(std::cin, line);)
-        {
-            if (line.empty())
-            {
-                continue;
-            }
-
-            filter::IP ip;
-
-            if (std::sscanf(line.c_str(), "%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]) == 4)
-            {
-                ip_pool.push_back(ip);
-            }
-        }
-
-        filter::reverse_lexicographically_sort(ip_pool);
-
-        filter::print_ip_pool(ip_pool);
-
-        filter::print_ip_pool(filter::filter(ip_pool, 1));
-
-        // TODO filter by first and second bytes and output
-        // ip = filter(46, 70)
-
-        filter::print_ip_pool(filter::filter(ip_pool, 46, 70));
-
-        // TODO filter by any byte and output
-        // ip = filter_any(46)
-
-        filter::print_ip_pool(filter::filter_any(ip_pool, 46));
-
-    }
-    catch(const std::exception &e)
-    {
-        std::cerr << e.what() << std::endl;
-    }
-
-    return 0;
+  return 0;
 }
