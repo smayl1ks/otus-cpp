@@ -13,7 +13,7 @@
 #include <chrono>
 #include <optional>
 
-namespace run::network::server
+namespace run::server
 {
 
 inline int64_t NowMs() noexcept
@@ -36,4 +36,4 @@ inline run::proto::Envelope MakeResponseEnvelope(const run::proto::Envelope& req
 boost::asio::awaitable<std::optional<run::proto::Envelope>>
 DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::running::ServiceStack& services);
 
-} // namespace run::network::server
+} // namespace run::server

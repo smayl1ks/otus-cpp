@@ -35,6 +35,9 @@ ServerConfig::ServerConfig(int argc, char* argv[])
     LoadLoggerConfig(vm);
     LoadSSLConfig(vm);
     LoadStorageConfig(vm);
+    LoadDatabaseConfig(vm);
+    LoadDevConfig(vm);
+    LoadAuthConfig(vm);
 
     ConfigValidator validator(m_config_data);
 
@@ -82,29 +85,48 @@ void ServerConfig::LoadStorageConfig(const po::variables_map& vm)
     m_config_data.tmp_dir = vm["server.tmp-dir"].as<std::string>();
 }
 
+void ServerConfig::LoadDatabaseConfig(const po::variables_map& vm)
+{
+    if (vm.count("postgres.host"))
+        m_config_data.postgres.host = vm["postgres.host"].as<std::string>();
+    if (vm.count("postgres.port"))
+        m_config_data.postgres.port = vm["postgres.port"].as<unsigned short>();
+    if (vm.count("postgres.db"))
+        m_config_data.postgres.dbname = vm["postgres.db"].as<std::string>();
+    if (vm.count("postgres.user"))
+        m_config_data.postgres.user = vm["postgres.user"].as<std::string>();
+    if (vm.count("postgres.password"))
+        m_config_data.postgres.password = vm["postgres.password"].as<std::string>();
+    if (vm.count("postgres.pool-size"))
+        m_config_data.postgres.pool_size = vm["postgres.pool-size"].as<size_t>();
+}
+
+void ServerConfig::LoadDevConfig(const po::variables_map& vm)
+{
+    if (vm.count("dev.username"))
+        m_config_data.dev.username = vm["dev.username"].as<std::string>();
+    if (vm.count("dev.password"))
+        m_config_data.dev.password = vm["dev.password"].as<std::string>();
+}
+
+void ServerConfig::LoadAuthConfig(const po::variables_map& vm)
+{
+    if (vm.count("auth.jwt-secret"))
+        m_config_data.auth.jwt_secret = vm["auth.jwt-secret"].as<std::string>();
+    if (vm.count("server.root.password"))
+        m_config_data.auth.root_password = vm["server.root.password"].as<std::string>();
+}
+
 std::string ServerConfig::GetRootPassword() const
 {
-    const auto& results = m_options.GetResults();
-
-    if (results.count("server.root.password") == 0)
-    {
-        return {};
-    }
-
-    return results["server.root.password"].as<std::string>();
+    return m_config_data.auth.root_password;
 }
 
 std::string ServerConfig::GetJwtSecret() const
 {
-    if (const char* secret = std::getenv("JWT_ACCESS_SECRET"); secret != nullptr && secret[0] != '\0')
+    if (!m_config_data.auth.jwt_secret.empty() && m_config_data.auth.jwt_secret != "GENERATED_PLACEHOLDER")
     {
-        return secret;
-    }
-    // Packaging contract: service/runner.service.in + service/postinst.in.
-    if (const char* secret = std::getenv("RUNNER_ROOT_PASSWORD"); secret != nullptr && secret[0] != '\0'
-        && std::string_view{secret} != "GENERATED_PLACEHOLDER")
-    {
-        return secret;
+        return m_config_data.auth.jwt_secret;
     }
     return GetRootPassword();
 }

@@ -1,4 +1,6 @@
 #include "config/options.hpp"
+#include <algorithm>
+#include <unordered_map>
 
 namespace config
 {
@@ -13,6 +15,9 @@ void ConfigOptions::SetOptions()
     SetCommandLineOptions();
     SetCommonOptions();
     SetLoggerOptions();
+    SetDatabaseOptions();
+    SetDevOptions();
+    SetAuthOptions();
     SetEnvMapping();
 }
 
@@ -21,32 +26,81 @@ void ConfigOptions::SetEnvMapping()
     m_environment_options.add_options()("server.root.password", po::value<std::string>(), "Root password");
 }
 
+void ConfigOptions::SetDatabaseOptions()
+{
+    m_database_options.add_options()
+        ("postgres.host", po::value<std::string>()->default_value(g_DefaultPostgresHost), "PostgreSQL host")
+        ("postgres.port", po::value<unsigned short>()->default_value(g_DefaultPostgresPort), "PostgreSQL port")
+        ("postgres.db", po::value<std::string>()->default_value(g_DefaultPostgresDB), "PostgreSQL database name")
+        ("postgres.user", po::value<std::string>()->default_value(g_DefaultPostgresUser), "PostgreSQL user")
+        ("postgres.password", po::value<std::string>()->default_value(g_DefaultPostgresPassword), "PostgreSQL password")
+        ("postgres.pool-size", po::value<size_t>()->default_value(g_DefaultPostgresPoolSize), "PostgreSQL connection pool size (0 = auto)");
+}
+
+void ConfigOptions::SetDevOptions()
+{
+    m_dev_options.add_options()
+        ("dev.username", po::value<std::string>()->default_value(""), "Dev seed username")
+        ("dev.password", po::value<std::string>()->default_value(""), "Dev seed password");
+}
+
+void ConfigOptions::SetAuthOptions()
+{
+    m_auth_options.add_options()
+        ("auth.jwt-secret", po::value<std::string>()->default_value(""), "JWT access secret");
+}
+
 void ConfigOptions::ParseEnvironment()
 {
     po::options_description env_opts;
-    env_opts.add(m_common_options).add(m_logger_options).add(m_environment_options);
+    env_opts.add(m_common_options)
+            .add(m_logger_options)
+            .add(m_database_options)
+            .add(m_dev_options)
+            .add(m_auth_options)
+            .add(m_environment_options);
+
+    // Direct mapping for common/standard environment variables:
+    static const std::unordered_map<std::string, std::string> kDirectEnvMap = {
+        {"POSTGRES_HOST", "postgres.host"},
+        {"POSTGRES_PORT", "postgres.port"},
+        {"POSTGRES_DB", "postgres.db"},
+        {"POSTGRES_USER", "postgres.user"},
+        {"POSTGRES_PASSWORD", "postgres.password"},
+        {"POSTGRES_POOL_SIZE", "postgres.pool-size"},
+        {"RUN_DEV_USERNAME", "dev.username"},
+        {"RUN_DEV_PASSWORD", "dev.password"},
+        {"JWT_ACCESS_SECRET", "auth.jwt-secret"},
+        {"RUNNER_ROOT_PASSWORD", "auth.jwt-secret"}
+    };
 
     constexpr std::string_view prefix = "RUN_";
 
-    store(po::parse_environment(env_opts,
-                                [&env_opts, prefix](std::string env_var) -> std::string
-                                {
-                                    if (env_var.rfind(prefix, 0) == 0)
-                                    {
-                                        std::string opt = env_var.substr(prefix.length()); // cut "RUN_"
-                                        std::transform(opt.begin(), opt.end(), opt.begin(), ::tolower);
+    store(po::parse_environment(
+        env_opts,
+        [&env_opts, prefix](const std::string& env_var) -> std::string
+        {
+            if (auto it = kDirectEnvMap.find(env_var); it != kDirectEnvMap.end())
+            {
+                return it->second;
+            }
 
-                                        // Replace '_' to '.' (example: RUN_SERVER_THREADS <=> server.threads)
-                                        std::replace(opt.begin(), opt.end(), '_', '.');
+            if (env_var.rfind(prefix, 0) == 0)
+            {
+                std::string opt = env_var.substr(prefix.length()); // cut "RUN_"
+                std::transform(opt.begin(), opt.end(), opt.begin(), ::tolower);
 
-                                        if (env_opts.find_nothrow(opt, false) != nullptr)
-                                        {
-                                            return opt;
-                                        }
-                                    }
-                                    return "";
-                                }),
-          m_results);
+                // Replace '_' to '.' (example: RUN_SERVER_THREADS <=> server.threads)
+                std::replace(opt.begin(), opt.end(), '_', '.');
+
+                if (env_opts.find_nothrow(opt, false) != nullptr)
+                {
+                    return opt;
+                }
+            }
+            return "";
+        }),
+        m_results);
 }
 
 void ConfigOptions::SetCommandLineOptions()
@@ -99,7 +153,12 @@ void ConfigOptions::ParseCommandLine(int argc, char* argv[])
 {
     po::options_description cmd_opts;
 
-    cmd_opts.add(m_command_line_options).add(m_common_options).add(m_logger_options);
+    cmd_opts.add(m_command_line_options)
+            .add(m_common_options)
+            .add(m_logger_options)
+            .add(m_database_options)
+            .add(m_dev_options)
+            .add(m_auth_options);
 
     store(po::command_line_parser(argc, argv).options(cmd_opts).run(), m_results);
 }
@@ -128,7 +187,11 @@ void ConfigOptions::ParseDefaultConfigFile()
 void ConfigOptions::LoadConfigFile(std::string_view filename)
 {
     po::options_description config_options;
-    config_options.add(m_common_options).add(m_logger_options);
+    config_options.add(m_common_options)
+                  .add(m_logger_options)
+                  .add(m_database_options)
+                  .add(m_dev_options)
+                  .add(m_auth_options);
 
     std::filesystem::path config_path{filename};
 
@@ -187,6 +250,10 @@ void ConfigOptions::PrintHelp() const
     po::options_description common_header("Server Settings");
     common_header.add(m_common_options);
     visible_opts.add(common_header);
+
+    po::options_description db_header("Database Settings");
+    db_header.add(m_database_options);
+    visible_opts.add(db_header);
 
     std::cout << visible_opts << std::endl;
 

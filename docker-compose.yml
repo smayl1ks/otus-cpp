@@ -35,6 +35,7 @@ services:
     environment:
       - NODE_ID=node_1
       - REDIS_PUBSUB_HOSTS=redis_pubsub_0:6379,redis_pubsub_1:6379
+      - RUN_NETWORK_HTTP_PORT=8080
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,6 +56,7 @@ services:
     environment:
       - NODE_ID=node_2
       - REDIS_PUBSUB_HOSTS=redis_pubsub_0:6379,redis_pubsub_1:6379
+      - RUN_NETWORK_HTTP_PORT=8080
     depends_on:
       postgres:
         condition: service_healthy
@@ -182,6 +184,12 @@ services:
     restart: always
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
     ports:
       - "9090:9090"
     networks:
@@ -191,6 +199,7 @@ volumes:
   postgres_data:
   redis_data:
   redis_replica_data:
+  prometheus_data:
 
 networks:
   app_network:

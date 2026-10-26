@@ -1,8 +1,29 @@
 #include "network/server/envelope_dispatcher.hpp"
+#include "monitoring/metrics_collector.hpp"
+#include <chrono>
+
+namespace {
+const char* PayloadCaseToString(run::proto::Envelope::PayloadCase c)
+{
+    switch (c)
+    {
+    case run::proto::Envelope::PayloadCase::kLocationBatch: return "LocationBatch";
+    case run::proto::Envelope::PayloadCase::kStartRunRequest: return "StartRunRequest";
+    case run::proto::Envelope::PayloadCase::kGetActiveRunRequest: return "GetActiveRunRequest";
+    case run::proto::Envelope::PayloadCase::kFinishRunRequest: return "FinishRunRequest";
+    case run::proto::Envelope::PayloadCase::kCancelRunRequest: return "CancelRunRequest";
+    case run::proto::Envelope::PayloadCase::kOfflineRunInitRequest: return "OfflineRunInitRequest";
+    case run::proto::Envelope::PayloadCase::kOfflineRunChunkRequest: return "OfflineRunChunkRequest";
+    case run::proto::Envelope::PayloadCase::kOfflineRunCommitRequest: return "OfflineRunCommitRequest";
+    case run::proto::Envelope::PayloadCase::kSubscribeViewportRequest: return "SubscribeViewportRequest";
+    default: return "other";
+    }
+}
+} // namespace
 
 #include "envelope.pb.h"
 
-namespace run::network::server
+namespace run::server
 {
 
 boost::asio::awaitable<std::optional<run::proto::Envelope>>
@@ -12,6 +33,9 @@ DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::run
     {
         co_return std::nullopt;
     }
+
+    auto start_time = std::chrono::steady_clock::now();
+    monitoring::MetricsCollector::Instance().IncrementWsEnvelopes(PayloadCaseToString(request.payload_case()));
 
     auto response = MakeResponseEnvelope(request);
 
@@ -75,7 +99,11 @@ DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::run
         co_return std::nullopt;
     }
 
+    auto end_time = std::chrono::steady_clock::now();
+    double duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    monitoring::MetricsCollector::Instance().ObserveWsDispatchDuration(duration_us);
+
     co_return response;
 }
 
-} // namespace run::network::server
+} // namespace run::server

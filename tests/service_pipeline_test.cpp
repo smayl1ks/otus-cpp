@@ -87,7 +87,7 @@ struct PipelineFixture
 
 Envelope Dispatch(PipelineFixture& f, int64_t user_id, Envelope request)
 {
-    return RunTask(run::network::server::DispatchAsync(user_id, Wrap(std::move(request)), f.stack)).value();
+    return RunTask(run::server::DispatchAsync(user_id, Wrap(std::move(request)), f.stack)).value();
 }
 
 Envelope MakeStart(const std::string& session_id, run::proto::session::RunMode mode = run::proto::session::RUN_MODE_ONLINE)
@@ -351,12 +351,12 @@ TEST(ServicePipeline, ForeignUser_IsRejectedOnEveryPath)
 
     Envelope batch;
     *batch.mutable_location_batch() = MakeBatch(session, "foreign-batch", 1, NowMs());
-    auto foreign_ack = RunTask(run::network::server::DispatchAsync(kForeignId, Wrap(std::move(batch)), f.stack)).value();
+    auto foreign_ack = RunTask(run::server::DispatchAsync(kForeignId, Wrap(std::move(batch)), f.stack)).value();
     EXPECT_EQ(foreign_ack.batch_process_response().system_status(), common::SYSTEM_STATUS_INVALID_PAYLOAD);
 
     Envelope finish;
     finish.mutable_finish_run_request()->set_session_id(session);
-    auto foreign_finish = RunTask(run::network::server::DispatchAsync(kForeignId, Wrap(std::move(finish)), f.stack)).value();
+    auto foreign_finish = RunTask(run::server::DispatchAsync(kForeignId, Wrap(std::move(finish)), f.stack)).value();
     EXPECT_EQ(foreign_finish.finish_run_response().reject_reason(),
               run::proto::session::FINISH_REJECT_REASON_SESSION_NOT_FOUND);
 }

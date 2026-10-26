@@ -32,6 +32,7 @@ private:
     // Sessions -> h3_parent_index
     std::unordered_map<SessionRawPtr, std::unordered_set<uint64_t>> m_session_zones;
 
+    size_t m_active_sessions_count{0};
     mutable std::shared_mutex m_mutex;
 
 public:
@@ -51,6 +52,7 @@ public:
 
     /// Graceful shutdown: flush + 1001 Going Away on every live session.
     void CloseAllSessions();
+    size_t GetActiveSessionsCount() const noexcept;
 };
 
 } // namespace run::server::session

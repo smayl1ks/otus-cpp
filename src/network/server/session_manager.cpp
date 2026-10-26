@@ -1,5 +1,6 @@
 #include "network/server/session_manager.hpp"
 #include "network/server/user_session.hpp"
+#include "monitoring/metrics_collector.hpp"
 
 namespace run::server::session
 {
@@ -7,7 +8,12 @@ namespace run::server::session
 void SessionManager::AddSession(uint64_t user_id, SessionPtr session)
 {
     std::unique_lock lock(m_mutex);
-    m_user_sessions[user_id].insert(std::move(session));
+    auto [it, inserted] = m_user_sessions[user_id].insert(std::move(session));
+    if (inserted)
+    {
+        ++m_active_sessions_count;
+        monitoring::MetricsCollector::Instance().SetActiveSockets(static_cast<double>(m_active_sessions_count));
+    }
 }
 
 void SessionManager::UpdateViewportSubscription(SessionPtr session, const std::vector<uint64_t>& new_h3_zones)
@@ -67,12 +73,13 @@ void SessionManager::RemoveSession(uint64_t user_id, SessionRawPtr raw_ptr)
 
     if (auto it = m_user_sessions.find(user_id); it != m_user_sessions.end())
     {
-        std::erase_if(it->second, [raw_ptr](const SessionPtr& s) { return s.get() == raw_ptr; });
-
+        auto erased = std::erase_if(it->second, [raw_ptr](const SessionPtr& s) { return s.get() == raw_ptr; });
+        m_active_sessions_count = (m_active_sessions_count >= erased) ? (m_active_sessions_count - erased) : 0;
         if (it->second.empty())
         {
             m_user_sessions.erase(it);
         }
+        monitoring::MetricsCollector::Instance().SetActiveSockets(static_cast<double>(m_active_sessions_count));
     }
 }
 
@@ -123,17 +130,25 @@ void SessionManager::CloseAllSessions()
 {
     std::vector<SessionPtr> sessions;
     {
-        std::shared_lock lock(m_mutex);
+        std::unique_lock lock(m_mutex);
         for (const auto& [user_id, user_sessions] : m_user_sessions)
         {
             sessions.insert(sessions.end(), user_sessions.begin(), user_sessions.end());
         }
+        m_active_sessions_count = 0;
+        monitoring::MetricsCollector::Instance().SetActiveSockets(0.0);
     }
 
     for (const auto& session : sessions)
     {
         session->RequestClose();
     }
+}
+
+size_t SessionManager::GetActiveSessionsCount() const noexcept
+{
+    std::shared_lock lock(m_mutex);
+    return m_active_sessions_count;
 }
 
 } // namespace run::server::session

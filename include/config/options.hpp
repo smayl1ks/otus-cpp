@@ -23,6 +23,9 @@ private:
     po::options_description m_command_line_options;
     po::options_description m_common_options;
     po::options_description m_logger_options;
+    po::options_description m_database_options;
+    po::options_description m_dev_options;
+    po::options_description m_auth_options;
     po::options_description m_environment_options;
 
     po::variables_map m_results;
@@ -33,6 +36,9 @@ private:
     void SetCommonOptions();
     void SetCommandLineOptions();
     void SetLoggerOptions();
+    void SetDatabaseOptions();
+    void SetDevOptions();
+    void SetAuthOptions();
     void SetEnvMapping();
 
     void ParseCommandLine(int argc, char* argv[]);

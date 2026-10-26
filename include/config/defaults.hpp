@@ -36,4 +36,11 @@ constexpr size_t g_LoggerDefaultMaxSize = 5 * 1024 * 1024; // 5 MB
 constexpr size_t g_LoggerDefaultMaxFiles = 3;
 constexpr int g_LoggerDefaultFlushInterval = 3; // seconds
 
+constexpr auto g_DefaultPostgresHost = "localhost";
+constexpr unsigned short g_DefaultPostgresPort = 5432;
+constexpr auto g_DefaultPostgresDB = "run_uram_db";
+constexpr auto g_DefaultPostgresUser = "postgres_user";
+constexpr auto g_DefaultPostgresPassword = "";
+constexpr size_t g_DefaultPostgresPoolSize = 0;
+
 } // namespace config

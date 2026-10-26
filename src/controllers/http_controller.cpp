@@ -1,4 +1,5 @@
 #include "controllers/http_controller.hpp"
+#include "monitoring/metrics_collector.hpp"
 
 #include "logger/logger.hpp"
 
@@ -163,9 +164,20 @@ HttpController::HandleRequest(http::request<http::string_body> request)
         co_return co_await HandleWsTicket(std::move(request));
     }
 
-    // --- Deployment check ---------------------------------------------------
+    // --- Prometheus Metrics & Deployment checks -----------------------------
+    if (request.method() == http::verb::get && path == "/metrics")
+    {
+        http::response<http::string_body> response{http::status::ok, request.version()};
+        response.set(http::field::server, "Run Server");
+        response.set(http::field::content_type, "text/plain; version=0.0.4; charset=utf-8");
+        response.body() = monitoring::MetricsCollector::Instance().Collect();
+        response.prepare_payload();
+        monitoring::MetricsCollector::Instance().IncrementHttpRequests("GET", "/metrics", 200);
+        co_return response;
+    }
     if (request.method() == http::verb::get && path == "/api/v1/health")
     {
+        monitoring::MetricsCollector::Instance().IncrementHttpRequests("GET", "/api/v1/health", 200);
         co_return MakeResponse(request, http::status::ok, {{"status", "ok"}});
     }
 

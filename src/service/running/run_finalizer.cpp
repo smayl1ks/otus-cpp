@@ -1,4 +1,6 @@
 #include "service/running/run_finalizer.hpp"
+#include "monitoring/metrics_collector.hpp"
+#include <chrono>
 
 #include "logger/logger.hpp"
 
@@ -106,9 +108,17 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
     gameplay::territory_conquest::CaptureResult captures;
     if (close_reason == repository::RunCloseReason::kFinished && valid_points.size() >= 2)
     {
+        auto t0 = std::chrono::steady_clock::now();
         captures = m_capture_resolver->Resolve(std::span<const RunPoint>(valid_points));
+        auto t1 = std::chrono::steady_clock::now();
+        double latency_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
         summary.claimed_hexes = captures.claimed_hexes;
         summary.hexagons_captured_count = static_cast<uint32_t>(captures.claimed_hexes.size());
+
+        monitoring::MetricsCollector::Instance().IncrementResolvedTracks();
+        monitoring::MetricsCollector::Instance().AddCapturedCells(static_cast<double>(captures.claimed_hexes.size()));
+        monitoring::MetricsCollector::Instance().ObserveLatency(latency_us);
     }
 
     // [3] Validation thresholds. Distance comes from the capture-resolved

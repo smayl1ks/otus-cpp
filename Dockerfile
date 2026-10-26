@@ -62,7 +62,7 @@ RUN mkdir -p /var/log/runner /tmp/runner /opt/runner/ssl
 COPY --from=builder /app/build/runner /opt/runner/runner
 COPY --from=builder /app/runner.cfg /etc/runner/runner.cfg
 
-EXPOSE 8080 8081 9090
+EXPOSE 8080 8081 9090 9100
 
 WORKDIR /opt/runner
 CMD ["./runner"]

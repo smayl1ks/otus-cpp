@@ -25,9 +25,6 @@ bool ConfigValidator::Validate() const
 
 bool ConfigValidator::ValidateServerDirs() const
 {
-    // Validate the CONFIGURED locations, not the compile-time defaults:
-    // every path is overridable from the command line / config file, and the
-    // defaults under /opt, /var, /etc are often not writable in dev.
     const std::array<std::filesystem::path, 2> required_dirs = {m_config_data.tmp_dir, m_config_data.logger.dir};
 
     try
@@ -87,6 +84,10 @@ void ConfigValidator::DumpToLog() const
         LOG_INFO("SSL certificate file: {}", m_config_data.ssl.cert_file.string());
         LOG_INFO("SSL key file: {}", m_config_data.ssl.key_file.string());
     }
+
+    LOG_INFO("Postgres host: {}:{}", m_config_data.postgres.host, m_config_data.postgres.port);
+    LOG_INFO("Postgres db: {}", m_config_data.postgres.dbname);
+    LOG_INFO("Postgres user: {}", m_config_data.postgres.user);
 
     LOG_INFO("Logger level: {}", m_config_data.logger.level);
     LOG_INFO("Logger pattern: {}", m_config_data.logger.pattern);

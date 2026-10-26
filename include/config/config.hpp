@@ -22,12 +22,12 @@ private:
     static std::unique_ptr<ServerConfig>& Instance();
 
     void LoadNetworkConfig(const po::variables_map& vm);
-
     void LoadLoggerConfig(const po::variables_map& vm);
-
     void LoadSSLConfig(const po::variables_map& vm);
-
     void LoadStorageConfig(const po::variables_map& vm);
+    void LoadDatabaseConfig(const po::variables_map& vm);
+    void LoadDevConfig(const po::variables_map& vm);
+    void LoadAuthConfig(const po::variables_map& vm);
 
     static std::unique_ptr<ServerConfig>& InstancePtr();
 
@@ -52,6 +52,21 @@ public:
     const SSLConfig& GetSSL() const
     {
         return m_config_data.ssl;
+    }
+
+    const PostgresConfig& GetPostgresSettings() const
+    {
+        return m_config_data.postgres;
+    }
+
+    const DevConfig& GetDevSettings() const
+    {
+        return m_config_data.dev;
+    }
+
+    const AuthConfig& GetAuthSettings() const
+    {
+        return m_config_data.auth;
     }
 
     const std::filesystem::path& TmpDir() const
@@ -81,10 +96,9 @@ public:
 
     std::string GetRootPassword() const;
 
-    /// HMAC key for access tokens. Resolution order (first non-empty wins):
-    ///   1. JWT_ACCESS_SECRET env (docker-compose / .env);
-    ///   2. RUNNER_ROOT_PASSWORD env (systemd unit: postinst generates it);
-    ///   3. --server.root.password option (RUN_SERVER_ROOT_PASSWORD env).
+    /// HMAC key for access tokens. Resolution order:
+    ///   1. auth.jwt-secret (env JWT_ACCESS_SECRET / RUNNER_ROOT_PASSWORD / config);
+    ///   2. server.root.password;
     std::string GetJwtSecret() const;
 };
 
