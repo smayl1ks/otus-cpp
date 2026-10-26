@@ -1,0 +1,15 @@
+<map id="include/print_ip.hpp" name="include/print_ip.hpp">
+<area shape="rect" id="Node000001" title="Реализация перегруженной функции print_ip для вывода условных IP&#45;адресов с использованием механизма S..." alt="" coords="197,5,347,33"/>
+<area shape="rect" id="Node000002" title=" " alt="" coords="5,81,75,109"/>
+<area shape="poly" id="edge1_Node000001_Node000002" title=" " alt="" coords="231,36,90,80,89,75,230,31"/>
+<area shape="rect" id="Node000003" title=" " alt="" coords="99,81,178,109"/>
+<area shape="poly" id="edge2_Node000001_Node000003" title=" " alt="" coords="251,33,176,76,174,71,246,34"/>
+<area shape="rect" id="Node000004" title=" " alt="" coords="203,81,261,109"/>
+<area shape="poly" id="edge3_Node000001_Node000004" title=" " alt="" coords="267,32,248,69,245,65,263,35"/>
+<area shape="rect" id="Node000005" title=" " alt="" coords="285,81,339,109"/>
+<area shape="poly" id="edge4_Node000001_Node000005" title=" " alt="" coords="280,31,300,68,295,66,278,36"/>
+<area shape="rect" id="Node000006" title=" " alt="" coords="364,81,455,109"/>
+<area shape="poly" id="edge5_Node000001_Node000006" title=" " alt="" coords="297,31,374,74,369,74,296,36"/>
+<area shape="rect" id="Node000007" title=" " alt="" coords="480,81,539,109"/>
+<area shape="poly" id="edge6_Node000001_Node000007" title=" " alt="" coords="315,31,468,79,462,80,314,36"/>
+</map>
