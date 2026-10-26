@@ -1,0 +1,266 @@
+syntax = "proto3";
+
+package run.proto.session;
+
+import "common.proto";
+import "telemetry.proto";
+
+// How the run is delivered to the server.
+enum RunMode {
+  RUN_MODE_UNSPECIFIED = 0;
+  RUN_MODE_ONLINE = 1;   // Started with a live WS connection; batches stream in real time.
+  RUN_MODE_OFFLINE = 2;  // Started without connectivity. Buffered points are replayed as
+                         // batches with historical timestamps once the device reconnects;
+                         // radar publication and future-skew checks are skipped for them.
+                         // If connectivity never returns, the finished track is uploaded
+                         // via OfflineRun* messages instead.
+}
+
+enum VisibilityScope {
+  VISIBILITY_PRIVATE = 0;    // No radar publication, results visible only to the owner.
+  VISIBILITY_TEAM_ONLY = 1;  // Radar pinged to team channels only.
+  VISIBILITY_PUBLIC = 2;     // Radar pinged to public channels.
+}
+
+// Rejection reasons for session initialization.
+enum StartRunRejectReason {
+  START_REJECT_REASON_NONE = 0;                   // Request accepted.
+  START_REJECT_REASON_ACTIVE_SESSION_EXISTS = 1;  // Another run (different session_id) is still active.
+  START_REJECT_REASON_USER_BLOCKED = 2;           // Account is suspended or flagged for cheating.
+  START_REJECT_REASON_INVALID_FACTION = 3;        // Specified team_id is invalid or inactive.
+}
+
+// Rejection reasons for session finalization.
+enum FinishRunRejectReason {
+  FINISH_REJECT_REASON_NONE = 0;                // Run finalized successfully.
+  FINISH_REJECT_REASON_SESSION_NOT_FOUND = 1;   // session_id does not exist or expired in Redis.
+  FINISH_REJECT_REASON_ALREADY_FINISHED = 2;    // Run was previously closed (ack carries stored summary).
+  FINISH_REJECT_REASON_INSUFFICIENT_DATA = 3;   // Not enough valid GPS points to compute results.
+}
+
+enum CancelRunRejectReason {
+  CANCEL_REJECT_REASON_NONE = 0;
+  CANCEL_REJECT_REASON_SESSION_NOT_FOUND = 1;
+  CANCEL_REJECT_REASON_ALREADY_FINISHED = 2;    // Finished runs can no longer be cancelled.
+}
+
+// Rejection reasons for the offline upload flow (Init / Chunk / Commit).
+enum OfflineRunRejectReason {
+  OFFLINE_REJECT_REASON_NONE = 0;              // Request accepted.
+  OFFLINE_REJECT_REASON_ACTIVE_SESSION_EXISTS = 1;  // An active run blocks the upload.
+  OFFLINE_REJECT_REASON_SESSION_CONFLICT = 2;  // session_id already registered with a different payload.
+  OFFLINE_REJECT_REASON_INVALID_TIME_RANGE = 3;  // finish_timestamp <= start_timestamp or declared
+                                                 // duration exceeds max_duration (12 h).
+  OFFLINE_REJECT_REASON_TOO_MANY_POINTS = 4;   // total_points_count above max_total_points.
+  OFFLINE_REJECT_REASON_SESSION_NOT_FOUND = 5; // Commit/chunk for a session that was never initialized.
+  OFFLINE_REJECT_REASON_UPLOAD_NOT_COMPLETE = 6;  // Commit received before every chunk was accepted.
+  OFFLINE_REJECT_REASON_ALREADY_COMMITTED = 7; // Commit is idempotent: re-request returns the stored summary.
+}
+
+// Final verdict of the run-validation thresholds (docs/RUN_ROLES.md §3).
+enum RunValidationReason {
+  VALIDATION_REASON_NONE = 0;                  // Run is valid.
+  VALIDATION_REASON_TOO_SHORT_DISTANCE = 1;    // distance < min_distance_meters (100 m).
+  VALIDATION_REASON_TOO_SHORT_DURATION = 2;    // duration < min_duration_seconds (60 s).
+  VALIDATION_REASON_TOO_LONG_DISTANCE = 3;     // distance > max_distance_meters (150 km).
+  VALIDATION_REASON_TOO_LONG_DURATION = 4;     // duration > max_duration_seconds (12 h).
+  VALIDATION_REASON_ANTICHEAT_REJECTED = 5;    // Spoofing/mock dominated the track.
+  VALIDATION_REASON_INSUFFICIENT_VALID_POINTS = 6;  // Too few points survived anticheat.
+  VALIDATION_REASON_INVALID_TIMESTAMPS = 7;    // Declared start/finish contradict the point timeline.
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_FINISHED = 1;    // Closed normally by FinishRun / OfflineRunCommit.
+  RUN_STATUS_CANCELLED = 2;   // Closed by CancelRun; hexes are not scored.
+}
+
+// Server view of a live run, returned on start-with-existing-session and on
+// explicit sync. Lets a client that crashed / lost connectivity reattach and
+// replay exactly what the server has not seen.
+message ActiveRunSnapshot {
+  string session_id = 1;             // Session the server currently holds.
+  int64 server_run_id = 2;           // DB id of the runs row.
+  RunMode mode = 3;
+  int64 started_at = 4;              // Server-validated start, epoch ms.
+  double total_distance_meters = 5;
+  int32 total_points_count = 6;
+  int64 last_sequence_number = 7;    // Client replays batches with sequence_number > this value.
+}
+
+// Final stats of a closed run. Shared by FinishRunResponse, OfflineRunCommitResponse
+// and CancelRunResponse so all closing paths return the same shape.
+// Field semantics mirror the `runs` table (docker/initdb/01_init_runs.sql).
+message RunSummary {
+  string session_id = 1;
+  int64 server_run_id = 2;
+  RunStatus status = 3;
+
+  double total_distance_meters = 4;   // Server-validated distance.
+  uint32 duration_seconds = 5;        // Wall-clock run time (start -> finish).
+  uint32 moving_duration_seconds = 6; // Active time excluding pauses (gaps > 3 min).
+  uint32 avg_pace_sec_per_km = 7;
+  float avg_speed_kmh = 8;
+  int32 total_points_count = 9;       // Valid GPS points stored for the run.
+
+  uint32 hexagons_captured_count = 10; // H3 cells newly captured or reinforced.
+  uint32 total_score = 11;             // Game points credited to user/faction totals.
+  repeated uint64 claimed_hexes = 12;  // Captured H3 indexes (cap: 1000, overflow via REST fetch).
+
+  bool is_valid = 13;                  // false = stored for history but not scored.
+  RunValidationReason validation_reason = 14;
+
+  int64 started_at_ms = 15;            // Server-validated boundaries, epoch ms.
+  int64 finished_at_ms = 16;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1 — run start. Also used to ATTACH an offline-started run once the
+// device reconnects mid-run (mode=OFFLINE), and to resume after app restart:
+// sending an already-active session_id is idempotent and returns the snapshot.
+// ---------------------------------------------------------------------------
+message StartRunRequest {
+  string session_id = 1;      // Client generated UUIDv4; the run idempotency key.
+  int64 team_id = 2;          // Active faction ID selected for territory capture.
+  VisibilityScope visibility = 3;
+  RunMode mode = 4;
+  int64 start_timestamp = 5;  // Device epoch ms when the user tapped "start".
+  int64 event_id = 6;         // Linked planned-run event (0 when standalone).
+  string device_id = 7;       // Stable installation id (analytics / ban correlation).
+  string app_version = 8;
+}
+
+message StartRunResponse {
+  common.SystemStatus system_status = 1;  // Transport/system RPC code.
+  StartRunRejectReason reject_reason = 2; // Business rejection reason when start failed.
+  string session_id = 3;
+  int64 server_run_id = 4;
+  int64 server_start_timestamp = 5;       // Server-validated epoch start time.
+  int64 server_timestamp_ms = 6;          // For client clock-skew estimation.
+  bool resumed = 7;                       // true = this session_id was already active; snapshot filled.
+  ActiveRunSnapshot snapshot = 8;         // Present when resumed.
+  // Ingestion limits the client must honor for the whole session.
+  uint32 max_points_per_batch = 9;        // Anticheat rejects larger batches (default 100).
+  uint32 batch_interval_hint_ms = 10;     // Preferred batching cadence.
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 — telemetry streaming. Handled by telemetry.LocationBatch /
+// telemetry.BatchProcessResponse (see envelope.proto).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Stage 3 — reconnection sync. A client that reestablished the WS asks whether
+// the server still holds a live run. Empty request: user identity comes from
+// the authenticated connection, never from the payload.
+// ---------------------------------------------------------------------------
+message GetActiveRunRequest {}
+
+message GetActiveRunResponse {
+  common.SystemStatus system_status = 1;
+  ActiveRunSnapshot snapshot = 2;      // Unset when the server holds no active run for this user.
+  uint32 max_points_per_batch = 3;
+  uint32 batch_interval_hint_ms = 4;
+  int64 server_timestamp_ms = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4 — finish. The server resolves territory capture ONCE over the whole
+// track (including loop closure) and applies the validation thresholds.
+// ---------------------------------------------------------------------------
+message FinishRunRequest {
+  string session_id = 1;
+  int64 finish_timestamp = 2;  // Device epoch ms when the user tapped "Finish".
+}
+
+message FinishRunResponse {
+  common.SystemStatus system_status = 1;
+  FinishRunRejectReason reject_reason = 2;
+  string session_id = 3;
+  RunSummary summary = 4;      // Present on success and on ALREADY_FINISHED (stored summary).
+  int64 server_timestamp_ms = 5;
+}
+
+// Stage 4b — user aborts the run. Track is kept with status=cancelled, nothing
+// is scored.
+message CancelRunRequest {
+  string session_id = 1;
+  int64 client_timestamp = 2;
+}
+
+message CancelRunResponse {
+  common.SystemStatus system_status = 1;
+  CancelRunRejectReason reject_reason = 2;
+  string session_id = 3;
+  RunSummary summary = 4;      // status=RUN_STATUS_CANCELLED; zeros where scoring does not apply.
+  int64 server_timestamp_ms = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Offline upload flow — for runs that finished entirely without connectivity.
+// Three phases over the same WS: Init -> Chunk (repeatable, any order) -> Commit.
+//
+// Idempotency:
+//   * run      — session_id (Init with the same session_id resumes the upload);
+//   * chunk    — (session_id, chunk_index), safe to retry on any network failure;
+//   * commit   — session_id, repeated commit returns the stored summary.
+// ---------------------------------------------------------------------------
+message OfflineRunInitRequest {
+  string session_id = 1;      // Client UUIDv4 generated when the offline run started.
+  int64 team_id = 2;
+  VisibilityScope visibility = 3;
+  int64 start_timestamp = 4;  // Device epoch ms; validated against the point timeline at commit.
+  int64 finish_timestamp = 5;
+  int64 event_id = 6;
+  string device_id = 7;
+  string app_version = 8;
+  int32 total_points_count = 9;   // Advisory plausibility check against max_total_points.
+  int32 total_chunks = 10;
+  double client_total_distance_meters = 11;  // Advisory; server recomputes everything.
+}
+
+message OfflineRunInitResponse {
+  common.SystemStatus system_status = 1;
+  OfflineRunRejectReason reject_reason = 2;
+  string session_id = 3;
+  int64 server_run_id = 4;
+  // Upload limits and resume state.
+  uint32 max_points_per_chunk = 5;    // Client must not exceed (default 1000 per WS frame).
+  int32 max_total_points = 6;         // 43200 = 12 h at 1 Hz (Tmax).
+  repeated int32 accepted_chunk_indexes = 7;  // Chunks the server already holds: resume point
+                                              // after app restart or lost connection mid-upload.
+  int64 server_timestamp_ms = 8;
+}
+
+message OfflineRunChunkRequest {
+  string session_id = 1;
+  int32 chunk_index = 2;      // 0-based; chunks may arrive out of order.
+  int32 total_chunks = 3;     // Must match Init; lets the server detect a changed upload.
+  repeated telemetry.LocationPoint points = 4;  // size <= max_points_per_chunk, timestamps ascending.
+}
+
+message OfflineRunChunkResponse {
+  common.SystemStatus system_status = 1;
+  OfflineRunRejectReason reject_reason = 2;
+  string session_id = 3;
+  int32 chunk_index = 4;
+  int32 accepted_points_count = 5;
+  telemetry.AnticheatStatus anticheat_status = 6;  // Advisory preview per chunk; final verdict happens
+                                         // at Commit over the fully assembled track.
+  int32 received_chunks_count = 7;       // Progress: how many distinct chunks the server holds.
+  uint32 retry_after_ms = 8;             // Backpressure hint when status is SERVICE_UNAVAILABLE.
+}
+
+message OfflineRunCommitRequest {
+  string session_id = 1;
+}
+
+message OfflineRunCommitResponse {
+  common.SystemStatus system_status = 1;
+  OfflineRunRejectReason reject_reason = 2;
+  string session_id = 3;
+  RunSummary summary = 4;      // Full server-side pipeline result: whole-track anticheat replay,
+                               // H3 capture resolution (incl. loop closure), validation thresholds.
+                               // summary.is_valid=false + reason = stored but not scored.
+  int64 server_timestamp_ms = 5;
+}

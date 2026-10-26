@@ -4,9 +4,9 @@
 #include "gameplay/geo_point.hpp"
 #include "gameplay/workout_tracking/workout_session.hpp"
 
-#include "common.pb.h"
-#include "location.pb.h"
+#include "telemetry.pb.h"
 
+#include <span>
 #include <vector>
 
 namespace run::network::mappers
@@ -21,7 +21,7 @@ class LocationMapper
 {
 public:
     static gameplay::anticheat::TelemetryPoint
-    ToTelemetryPoint(const ::run::proto::location::LocationPoint& proto) noexcept
+    ToTelemetryPoint(const ::run::proto::telemetry::LocationPoint& proto) noexcept
     {
         gameplay::anticheat::TelemetryPoint pt;
         pt.coord = gameplay::GeoPoint{.latitude = proto.latitude(), .longitude = proto.longitude()};
@@ -53,7 +53,7 @@ public:
     }
 
     static std::vector<gameplay::anticheat::TelemetryPoint>
-    ToTelemetryPoints(const ::run::proto::location::LocationBatch& batch)
+    ToTelemetryPoints(const ::run::proto::telemetry::LocationBatch& batch)
     {
         std::vector<gameplay::anticheat::TelemetryPoint> result;
         result.reserve(batch.points_size());
@@ -65,7 +65,7 @@ public:
     }
 
     static gameplay::workout_tracking::RunPoint
-    ToRunPoint(const ::run::proto::location::LocationPoint& proto, int64_t run_id = 0, int32_t point_order = 0,
+    ToRunPoint(const ::run::proto::telemetry::LocationPoint& proto, int64_t run_id = 0, int32_t point_order = 0,
                gameplay::territory_conquest::H3IndexValue h3_index = 0) noexcept
     {
         gameplay::workout_tracking::RunPoint p;
@@ -94,8 +94,30 @@ public:
         return p;
     }
 
+    /// Batch of validated domain points -> track points with running order.
+    static std::vector<gameplay::workout_tracking::RunPoint>
+    ToRunPoints(int64_t server_run_id, std::span<const gameplay::anticheat::TelemetryPoint> points,
+                int32_t first_point_order = 0)
+    {
+        std::vector<gameplay::workout_tracking::RunPoint> track;
+        track.reserve(points.size());
+        for (std::size_t i = 0; i < points.size(); ++i)
+        {
+            auto& p = track.emplace_back();
+            p.run_id = server_run_id;
+            p.point_order = first_point_order + static_cast<int32_t>(i);
+            p.coord = points[i].coord;
+            p.accuracy_meters = points[i].accuracy_meters;
+            p.speed_ms = points[i].speed_ms;
+            p.altitude_meters = points[i].altitude_meters;
+            p.heading_degrees = points[i].heading_degrees;
+            p.recorded_at = points[i].recorded_at;
+        }
+        return track;
+    }
+
     static void ToProtobuf(const gameplay::workout_tracking::RunPoint& entity,
-                           ::run::proto::location::LocationPoint& proto) noexcept
+                           ::run::proto::telemetry::LocationPoint& proto) noexcept
     {
         proto.set_latitude(entity.coord.latitude);
         proto.set_longitude(entity.coord.longitude);
@@ -120,45 +142,45 @@ public:
         }
     }
 
-    static ::common::AnticheatStatus ToProto(gameplay::anticheat::AnticheatStatus status) noexcept
+    static ::run::proto::telemetry::AnticheatStatus ToProto(gameplay::anticheat::AnticheatStatus status) noexcept
     {
         switch (status)
         {
         case gameplay::anticheat::AnticheatStatus::Ok:
-            return ::common::ANTICHEAT_STATUS_OK;
+            return ::run::proto::telemetry::ANTICHEAT_STATUS_OK;
         case gameplay::anticheat::AnticheatStatus::BatchTooLarge:
-            return ::common::ANTICHEAT_STATUS_BATCH_TOO_LARGE;
+            return ::run::proto::telemetry::ANTICHEAT_STATUS_BATCH_TOO_LARGE;
         case gameplay::anticheat::AnticheatStatus::GpsAccuracyLow:
-            return ::common::ANTICHEAT_STATUS_GPS_ACCURACY_LOW;
+            return ::run::proto::telemetry::ANTICHEAT_STATUS_GPS_ACCURACY_LOW;
         case gameplay::anticheat::AnticheatStatus::InvalidTimestamps:
-            return ::common::ANTICHEAT_STATUS_INVALID_TIMESTAMPS;
+            return ::run::proto::telemetry::ANTICHEAT_STATUS_INVALID_TIMESTAMPS;
         case gameplay::anticheat::AnticheatStatus::SpeedLimitExceeded:
-            return ::common::ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED;
+            return ::run::proto::telemetry::ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED;
         case gameplay::anticheat::AnticheatStatus::TeleportationDetected:
-            return ::common::ANTICHEAT_STATUS_TELEPORTATION_DETECTED;
+            return ::run::proto::telemetry::ANTICHEAT_STATUS_TELEPORTATION_DETECTED;
         case gameplay::anticheat::AnticheatStatus::MockDetected:
-            return ::common::ANTICHEAT_STATUS_MOCK_DETECTED;
+            return ::run::proto::telemetry::ANTICHEAT_STATUS_MOCK_DETECTED;
         }
-        return ::common::ANTICHEAT_STATUS_UNSPECIFIED;
+        return ::run::proto::telemetry::ANTICHEAT_STATUS_UNSPECIFIED;
     }
 
-    static gameplay::anticheat::AnticheatStatus FromProto(::common::AnticheatStatus proto_status) noexcept
+    static gameplay::anticheat::AnticheatStatus FromProto(::run::proto::telemetry::AnticheatStatus proto_status) noexcept
     {
         switch (proto_status)
         {
-        case ::common::ANTICHEAT_STATUS_OK:
+        case ::run::proto::telemetry::ANTICHEAT_STATUS_OK:
             return gameplay::anticheat::AnticheatStatus::Ok;
-        case ::common::ANTICHEAT_STATUS_BATCH_TOO_LARGE:
+        case ::run::proto::telemetry::ANTICHEAT_STATUS_BATCH_TOO_LARGE:
             return gameplay::anticheat::AnticheatStatus::BatchTooLarge;
-        case ::common::ANTICHEAT_STATUS_GPS_ACCURACY_LOW:
+        case ::run::proto::telemetry::ANTICHEAT_STATUS_GPS_ACCURACY_LOW:
             return gameplay::anticheat::AnticheatStatus::GpsAccuracyLow;
-        case ::common::ANTICHEAT_STATUS_INVALID_TIMESTAMPS:
+        case ::run::proto::telemetry::ANTICHEAT_STATUS_INVALID_TIMESTAMPS:
             return gameplay::anticheat::AnticheatStatus::InvalidTimestamps;
-        case ::common::ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED:
+        case ::run::proto::telemetry::ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED:
             return gameplay::anticheat::AnticheatStatus::SpeedLimitExceeded;
-        case ::common::ANTICHEAT_STATUS_TELEPORTATION_DETECTED:
+        case ::run::proto::telemetry::ANTICHEAT_STATUS_TELEPORTATION_DETECTED:
             return gameplay::anticheat::AnticheatStatus::TeleportationDetected;
-        case ::common::ANTICHEAT_STATUS_MOCK_DETECTED:
+        case ::run::proto::telemetry::ANTICHEAT_STATUS_MOCK_DETECTED:
             return gameplay::anticheat::AnticheatStatus::MockDetected;
         default:
             return gameplay::anticheat::AnticheatStatus::Ok;

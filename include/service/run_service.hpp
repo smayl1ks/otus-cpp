@@ -9,8 +9,8 @@
 #include "storage/redis/sharded_redis_manager.hpp"
 
 #include "common.pb.h"
-#include "events.pb.h"
-#include "location.pb.h"
+#include "session.pb.h"
+#include "telemetry.pb.h"
 
 #include <boost/asio/awaitable.hpp>
 #include <chrono>
@@ -26,8 +26,8 @@ using Task = boost::asio::awaitable<T>;
 struct FinishRunResult
 {
     common::SystemStatus system_status{common::SYSTEM_STATUS_OK};
-    events::FinishRunRejectReason reject_reason{events::FINISH_REJECT_REASON_NONE};
-    events::FinishRunResponse response_payload;
+    run::proto::session::FinishRunRejectReason reject_reason{run::proto::session::FINISH_REJECT_REASON_NONE};
+    run::proto::session::FinishRunResponse response_payload;
 };
 
 class RunService
@@ -41,10 +41,12 @@ public:
 
     ~RunService() = default;
 
-    Task<events::StartRunResponse> StartRunAsync(int64_t user_id, const events::StartRunRequest& request);
-    Task<events::BatchProcessResponse> ProcessBatchAsync(int64_t user_id,
-                                                         const run::proto::location::LocationBatch& batch);
-    Task<events::FinishRunResponse> FinishRunAsync(int64_t user_id, const events::FinishRunRequest& request);
+    Task<run::proto::session::StartRunResponse> StartRunAsync(int64_t user_id,
+                                                              const run::proto::session::StartRunRequest& request);
+    Task<run::proto::telemetry::BatchProcessResponse> ProcessBatchAsync(
+        int64_t user_id, const run::proto::telemetry::LocationBatch& batch);
+    Task<run::proto::session::FinishRunResponse> FinishRunAsync(int64_t user_id,
+                                                                const run::proto::session::FinishRunRequest& request);
 
     std::shared_ptr<repository::ITrackRepository> GetTrackRepository() const noexcept
     {

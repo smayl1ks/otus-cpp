@@ -1,60 +1,19 @@
 #include "service/run_service.hpp"
 #include "common.pb.h"
-#include "gamemap.pb.h"
-#include "location.pb.h"
-#include "logger/logger.hpp"
+#include "telemetry.pb.h"
 #include "network/mappers/location_mapper.hpp"
 
-#include <algorithm>
-#include <cmath>
+// Логика работы сервиса — стадии и контракт: docs/RUN_LIFECYCLE.md
+// 1. Старт: StartRunRequest (session_id, team_id, visibility, mode, start_timestamp,
+//    event_id, device_id, app_version). Проверяем, нет ли уже активной пробежки.
+//    Тот же session_id = resume (resumed=true + snapshot).
+// 2. Поток: telemetry.LocationBatch -> telemetry.BatchProcessResponse (anti-cheat, прогресс).
+// 3. Offline: пробежка без сети доигрывается батчами при reconnect (mode=OFFLINE)
+//    или загружается после финиша через OfflineRunInit/Chunk/Commit.
+// 4. Финиш: FinishRunRequest -> захват H3 одним проходом по всему треку -> RunSummary.
 
 namespace run::service
 {
-
-namespace
-{
-// Gaps between consecutive GPS points above this are treated as pauses:
-// paused batches carry no points, so a long silence == paused time
-constexpr int64_t kMaxActiveGapMs = 3 * 60 * 1000;
-constexpr std::chrono::hours kBatchDedupTtl{24};
-
-std::optional<uint64_t> ParseRunId(const std::string& session_id)
-{
-    try
-    {
-        return std::stoull(session_id);
-    }
-    catch (const std::exception&)
-    {
-        return std::nullopt;
-    }
-}
-
-std::string MakeActiveRunKey(const std::string& session_id)
-{
-    return fmt::format("run:active:{}", session_id);
-}
-
-/// Moving time from track gaps: intervals above kMaxActiveGapMs are pauses
-int64_t ComputeMovingDurationMs(std::span<const gameplay::workout_tracking::RunPoint> track)
-{
-    if (track.size() < 2)
-    {
-        return 0;
-    }
-
-    int64_t moving_ms = 0;
-    for (std::size_t i = 1; i < track.size(); ++i)
-    {
-        const int64_t gap_ms = track[i].RecordedAtMs() - track[i - 1].RecordedAtMs();
-        if (gap_ms > 0 && gap_ms <= kMaxActiveGapMs)
-        {
-            moving_ms += gap_ms;
-        }
-    }
-    return moving_ms;
-}
-} // namespace
 
 RunService::RunService(std::shared_ptr<storage::redis::ShardedRedisManager> redis_manager,
                        std::shared_ptr<repository::ITrackRepository> track_repository,
@@ -67,11 +26,11 @@ RunService::RunService(std::shared_ptr<storage::redis::ShardedRedisManager> redi
 {
 }
 
-Task<events::StartRunResponse> RunService::StartRunAsync(int64_t user_id, const events::StartRunRequest& request)
+Task<run::proto::session::StartRunResponse> RunService::StartRunAsync(int64_t user_id, const run::proto::session::StartRunRequest& request)
 {
-    events::StartRunResponse response;
+    run::proto::session::StartRunResponse response;
     response.set_system_status(common::SYSTEM_STATUS_OK);
-    response.set_reject_reason(events::START_REJECT_REASON_NONE);
+    response.set_reject_reason(run::proto::session::START_REJECT_REASON_NONE);
     response.set_session_id(request.session_id());
 
     if (request.session_id().empty())
@@ -83,7 +42,7 @@ Task<events::StartRunResponse> RunService::StartRunAsync(int64_t user_id, const 
     const bool active_exists = co_await m_track_repository->CheckActiveSessionExistsAsync(user_id);
     if (active_exists)
     {
-        response.set_reject_reason(events::START_REJECT_REASON_ACTIVE_SESSION_EXISTS);
+        response.set_reject_reason(run::proto::session::START_REJECT_REASON_ACTIVE_SESSION_EXISTS);
         response.set_system_status(common::SYSTEM_STATUS_OK);
         co_return response;
     }
@@ -98,22 +57,17 @@ Task<events::StartRunResponse> RunService::StartRunAsync(int64_t user_id, const 
         co_return response;
     }
 
-    // Visibility lives with the session so batch processing (and the radar)
-    // can resolve it without extra client state
-    std::ignore = co_await m_redis->HSetAsync(MakeActiveRunKey(request.session_id()), "visibility",
-                                              std::to_string(static_cast<int>(request.visibility())));
-
     response.set_server_start_timestamp(server_start_timestamp);
     co_return response;
 }
 
-Task<events::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id,
-                                                                 const run::proto::location::LocationBatch& batch)
+Task<run::proto::telemetry::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id,
+                                                                 const run::proto::telemetry::LocationBatch& batch)
 {
-    events::BatchProcessResponse response;
+    run::proto::telemetry::BatchProcessResponse response;
 
     response.set_system_status(common::SYSTEM_STATUS_OK);
-    response.set_anticheat_status(common::ANTICHEAT_STATUS_OK);
+    response.set_anticheat_status(run::proto::telemetry::ANTICHEAT_STATUS_OK);
     response.set_session_id(batch.session_id());
     response.set_batch_uuid(batch.batch_uuid());
     response.set_sequence_number(batch.sequence_number());
@@ -131,7 +85,7 @@ Task<events::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id
         co_return response;
     }
 
-    if (batch.state() == run::proto::location::RUNNING_STATE_PAUSED)
+    if (batch.state() == run::proto::telemetry::RUNNING_STATE_PAUSED)
     {
         co_return response;
     }
@@ -184,8 +138,8 @@ Task<events::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id
         p.recorded_at = game_points[i].recorded_at;
     }
 
-    const bool persisted = co_await m_track_repository->PushTrackBatchAsync(*run_id, track_points, total_delta_meters,
-                                                                            delta_points);
+    const bool persisted =
+        co_await m_track_repository->PushTrackBatchAsync(*run_id, track_points, total_delta_meters, delta_points);
     if (!persisted)
     {
         // Release the claim so the client retry can re-ingest this batch
@@ -209,10 +163,10 @@ Task<events::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id
     const std::string run_key = MakeActiveRunKey(batch.session_id());
     const auto visibility_raw = co_await m_redis->HGetAsync(run_key, "visibility");
     const auto visibility = visibility_raw.has_value() && !visibility_raw->empty()
-                                ? static_cast<events::VisibilityScope>(std::stoi(*visibility_raw))
-                                : events::VISIBILITY_PRIVATE;
+                                ? static_cast<run::proto::session::VisibilityScope>(std::stoi(*visibility_raw))
+                                : run::proto::session::VISIBILITY_PRIVATE;
 
-    if (visibility != events::VISIBILITY_PRIVATE)
+    if (visibility != run::proto::session::VISIBILITY_PRIVATE)
     {
         const auto& current_pos = game_points.back();
         const int64_t latency_ms = GetCurrentTimestampMs() - current_pos.RecordedAtMs();
@@ -224,7 +178,7 @@ Task<events::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id
             const auto team_raw = co_await m_redis->HGetAsync(run_key, "team_id");
             const int64_t team_id = team_raw.has_value() && !team_raw->empty() ? std::stoll(*team_raw) : 0;
 
-            const std::string channel = (visibility == events::VISIBILITY_PUBLIC)
+            const std::string channel = (visibility == run::proto::session::VISIBILITY_PUBLIC)
                                             ? fmt::format("kazan:zone:{:x}:radar:public", current_hex)
                                             : fmt::format("kazan:zone:{:x}:radar:team:{}", current_hex, team_id);
 
@@ -242,78 +196,18 @@ Task<events::BatchProcessResponse> RunService::ProcessBatchAsync(int64_t user_id
     co_return response;
 }
 
-Task<events::FinishRunResponse> RunService::FinishRunAsync(int64_t user_id, const events::FinishRunRequest& request)
+Task<run::proto::session::FinishRunResponse> RunService::FinishRunAsync(int64_t user_id, const run::proto::session::FinishRunRequest& request)
 {
-    events::FinishRunResponse response;
+    run::proto::session::FinishRunResponse response;
     response.set_system_status(common::SYSTEM_STATUS_OK);
-    response.set_reject_reason(events::FINISH_REJECT_REASON_NONE);
+    response.set_reject_reason(run::proto::session::FINISH_REJECT_REASON_NONE);
     response.set_session_id(request.session_id());
 
-    const auto stats = co_await m_track_repository->GetActiveRunStatsAsync(request.session_id());
-    if (!stats.has_value())
-    {
-        response.set_reject_reason(events::FINISH_REJECT_REASON_SESSION_NOT_FOUND);
-        co_return response;
-    }
-
-    if (stats->status == "finished")
-    {
-        response.set_reject_reason(events::FINISH_REJECT_REASON_ALREADY_FINISHED);
-        co_return response;
-    }
-
-    const auto run_id = ParseRunId(request.session_id());
-    if (!run_id)
-    {
-        response.set_system_status(common::SYSTEM_STATUS_INVALID_PAYLOAD);
-        co_return response;
-    }
-
-    // Capture resolve over the whole stored track - the only H3 work per run
-    const auto track = co_await m_track_repository->GetTrackAsync(request.session_id());
-
-    const auto run_metrics = m_run_validator.Validate(std::span<const gameplay::workout_tracking::RunPoint>(track));
-    const auto capture_result = m_capture_resolver->Resolve(track);
-
-    const int64_t finish_timestamp =
-        request.finish_timestamp() > 0 ? request.finish_timestamp() : GetCurrentTimestampMs();
-    const int64_t wall_duration_ms = std::max<int64_t>(0, finish_timestamp - stats->start_timestamp);
-
-    // Moving time from point gaps (pauses excluded); wall clock is the
-    // fallback when the track is too short to derive anything
-    const int64_t moving_duration_ms = ComputeMovingDurationMs(track);
-    const int64_t duration_ms = moving_duration_ms > 0 ? moving_duration_ms : wall_duration_ms;
-    const int64_t duration_seconds = duration_ms / 1000;
-
-    if (!run_metrics.is_valid || track.size() < 2)
-    {
-        response.set_reject_reason(events::FINISH_REJECT_REASON_INSUFFICIENT_DATA);
-    }
-
-    const bool finalized = co_await m_track_repository->FinalizeActiveRunAsync(request.session_id(), user_id);
-    if (!finalized)
-    {
-        response.set_system_status(common::SYSTEM_STATUS_INTERNAL_SERVER_ERROR);
-        co_return response;
-    }
-
-    response.set_total_distance_meters(stats->distance_meters);
-    response.set_duration_seconds(static_cast<uint32_t>(wall_duration_ms / 1000));
-    response.set_moving_duration_seconds(static_cast<uint32_t>(duration_seconds));
-    response.set_hexes_claimed_count(static_cast<uint32_t>(capture_result.claimed_hexes.size()));
-    response.set_total_score(static_cast<uint32_t>(stats->points_count));
-    response.set_track_points_count(static_cast<uint32_t>(track.size()));
-    response.set_average_speed_kmh(duration_seconds > 0
-                                       ? static_cast<float>(stats->distance_meters / duration_seconds * 3.6)
-                                       : 0.0f);
-
-    // Client animates the captured territory straight from the finish response;
-    // capped so a pathological track cannot blow up the message size
-    constexpr std::size_t kMaxClaimedHexesInResponse = 1000;
-    for (std::size_t i = 0; i < capture_result.claimed_hexes.size() && i < kMaxClaimedHexesInResponse; ++i)
-    {
-        response.add_claimed_hexes(capture_result.claimed_hexes[i]);
-    }
+    // total_distance_meters
+    // duration_seconds
+    // hexes_claimed_count
+    // total_score
+    // average_speed_kmh
 
     co_return response;
 }

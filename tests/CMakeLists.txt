@@ -9,6 +9,7 @@ add_executable(unit_tests
     run_point_test.cpp
     run_validator_test.cpp
     location_mapper_test.cpp
+    service_pipeline_test.cpp
     redis_storage_test.cpp
 )
 

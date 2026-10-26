@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package run.proto.telemetry;
+
+import "common.proto";
+
+// Client-side workout state reported with every telemetry batch.
+enum RunningState {
+  RUNNING_STATE_UNSPECIFIED = 0;
+  RUNNING_STATE_ACTIVE = 1;
+  RUNNING_STATE_PAUSED = 2;
+  RUNNING_STATE_FINISHED = 3;
+}
+
+// Mirrors gameplay::anticheat::AnticheatStatus 1:1. A batch is either fully
+// accepted or fully rejected: no partial ingestion of a failed batch.
+enum AnticheatStatus {
+  ANTICHEAT_STATUS_UNSPECIFIED = 0;
+  ANTICHEAT_STATUS_OK = 1;
+  ANTICHEAT_STATUS_BATCH_TOO_LARGE = 2;        // points > max_points_per_batch (server hint)
+  ANTICHEAT_STATUS_GPS_ACCURACY_LOW = 3;       // accuracy radius > 30 m
+  ANTICHEAT_STATUS_INVALID_TIMESTAMPS = 4;     // non-monotonic or future timestamps (> 5 s skew)
+  ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED = 5;   // > 35 km/h between consecutive points
+  ANTICHEAT_STATUS_TELEPORTATION_DETECTED = 6; // > 100 m jump between consecutive points
+  ANTICHEAT_STATUS_MOCK_DETECTED = 7;          // mock location provider flagged
+}
+
+message LocationPoint {
+  double latitude = 1;
+  double longitude = 2;
+  optional double altitude = 3;          // explicit presence: unset != 0
+  optional float speed = 4;              // m/s; unset when the sensor provided nothing
+  optional float heading = 5;
+  optional float accuracy = 6;           // GPS accuracy radius in meters
+  int64 timestamp = 7;                   // device epoch ms of the GPS sample
+  optional float accelerometer_z = 8;
+  bool is_mock = 9;
+}
+
+// Streaming telemetry batch (client -> server).
+//
+// Online run: sent every batch_interval_hint_ms while connected.
+// Offline-origin run: the same message replays buffered points recorded while
+// offline; their timestamps are in the past, the server skips radar
+// publication and future-skew checks for sessions started with mode=OFFLINE.
+message LocationBatch {
+  string session_id = 1;       // client UUIDv4 of the run (idempotency key)
+  string batch_uuid = 2;       // client UUIDv4 of THIS batch (dedup on retry)
+  int64 sequence_number = 3;   // monotonically increasing per session, starting at 1
+  RunningState state = 4;      // RUNNING_STATE_PAUSED with empty points acts as a heartbeat
+  repeated LocationPoint points = 5;  // sorted by timestamp ascending; size <= max_points_per_batch
+}
+
+// Server ack for a single LocationBatch (server -> client).
+message BatchProcessResponse {
+  common.SystemStatus system_status = 1; // Transport/system RPC code.
+  AnticheatStatus anticheat_status = 2;  // ANTICHEAT_STATUS_OK when the batch was ingested.
+  string session_id = 3;
+  string batch_uuid = 4;
+  int64 sequence_number = 5;
+
+  // Server-side run progress snapshot (client live progress without polling)
+  int32 accepted_points_count = 6;   // Points of THIS batch that passed anticheat
+  double total_distance_meters = 7;  // Accumulated server-validated distance
+  int32 total_points_count = 8;      // Accumulated valid points in the session
+  int64 server_timestamp_ms = 9;     // Server epoch ms (client clock skew / latency)
+  uint32 retry_after_ms = 10;        // Backpressure hint when status is SERVICE_UNAVAILABLE
+
+  // Highest contiguously processed sequence number: client detects gaps after
+  // reconnect and replays batches with sequence_number > last_sequence_number.
+  int64 last_sequence_number = 11;
+}

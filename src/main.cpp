@@ -1,54 +1,28 @@
-#include <boost/asio.hpp>
-#include <boost/redis/config.hpp>
-#include <boost/redis/connection.hpp>
-#include <boost/redis/logger.hpp>
-#include <string>
-
+#include "config/config.hpp"
 #include "logger/logger.hpp"
+#include "network/server/server.hpp"
 
-struct RedisUser
+#include <filesystem>
+
+int main(int argc, char* argv[])
 {
-    std::string name;
-    std::string password;
-};
+    const auto& server_config = config::ServerConfig::Get(argc, argv);
 
-boost::asio::awaitable<void> co_main(std::shared_ptr<boost::redis::connection> redis_connection, const RedisUser& user)
-{
-    boost::redis::config master_config;
-    master_config.use_ssl = false;
-    master_config.addr = boost::redis::address{"127.0.0.1", "6379"};
-    master_config.username = user.name;
-    master_config.password = user.password;
+    logger::LoggerConfig log_config;
+    log_config.level = server_config.GetLoggerSettings().level;
+    log_config.pattern = server_config.GetLoggerSettings().pattern;
+    log_config.dir = server_config.GetLoggerSettings().dir;
+    log_config.max_size = server_config.GetLoggerSettings().max_size;
+    log_config.max_files = server_config.GetLoggerSettings().max_files;
+    log_config.flush_interval = server_config.GetLoggerSettings().flush_interval;
+    log_config.async = server_config.GetLoggerSettings().async;
+    logger::Logger::Create(log_config);
 
-    redis_connection->async_run(master_config, boost::asio::consign(boost::asio::detached, redis_connection));
+    LOG_INFO("Starting {} v{}", server_config.GetServerName(), server_config.GetServerVersion());
 
-    co_return;
-}
+    run::server::Server server(server_config.Threads(), std::thread::hardware_concurrency() / 2 + 1);
+    server.Run();
 
-int main()
-{
-    boost::asio::io_context io_context;
-
-    // clang-format off
-    boost::redis::logger redis_logger{boost::redis::logger::level::info,
-        [](boost::redis::logger::level level, std::string_view message)
-            {
-                switch (level)
-                {
-                case boost::redis::logger::level::debug:
-                    LOG_DEBUG("[Boost-Redis] {}", message);
-                    break;
-                case boost::redis::logger::level::err:
-                    LOG_ERROR("[Boost-Redis] {}", message);
-                    break;
-                default:
-                    LOG_INFO("[Boost-Redis] {}", message);
-                    break;
-                }
-            }};
-    // clang-format on
-    auto redis_connection = std::make_shared<boost::redis::connection>(io_context, redis_logger);
-    boost::asio::co_spawn(io_context, co_main(redis_connection, {"mymaster", "12345"}), boost::asio::detached);
-    io_context.run();
+    LOG_INFO("Server stopped");
     return 0;
 }

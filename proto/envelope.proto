@@ -2,34 +2,51 @@ syntax = "proto3";
 
 package run.proto;
 
-import "location.proto";
-import "events.proto";
+import "common.proto";
 import "gamemap.proto";
+import "session.proto";
+import "telemetry.proto";
 
-// Common message envelope for multiplexing WebSocket streams
+// Common message envelope for multiplexing WebSocket streams.
+//
+// Field-number blocks (keep gaps for growth):
+//   10–19  telemetry streaming
+//   20–29  run session lifecycle (online)
+//   30–39  offline run upload
+//   40–49  gamemap / radar
 message Envelope {
-  // Optional envelope metadata header
   string message_id = 1;        // Unique message tracking ID (UUID)
   int64 timestamp = 2;          // Envelope emission epoch timestamp in milliseconds
   string correlation_id = 3;    // message_id of the request this message answers (WS replies are unordered)
   uint32 protocol_version = 4;  // Envelope schema version, currently 1
 
   oneof payload {
-    // Location batching telemetry
-    location.LocationBatch location_batch = 10;
+    // --- Telemetry streaming (stage 2) -----------------------------------
+    telemetry.LocationBatch location_batch = 10;                 // client -> server
+    telemetry.BatchProcessResponse batch_process_response = 11;  // server -> client ack
 
-    // Running session lifecycle events
-    events.StartRunRequest start_run_request = 20;
-    events.StartRunResponse start_run_response = 21;
-    events.FinishRunRequest finish_run_request = 22;
-    events.FinishRunResponse finish_run_response = 23;
-    events.BatchProcessResponse batch_process_response = 24;
+    // --- Session lifecycle: start / sync / finish / cancel ---------------
+    session.StartRunRequest start_run_request = 20;              // client -> server
+    session.StartRunResponse start_run_response = 21;            // server -> client
+    session.GetActiveRunRequest get_active_run_request = 22;     // client -> server (reconnect sync)
+    session.GetActiveRunResponse get_active_run_response = 23;   // server -> client
+    session.FinishRunRequest finish_run_request = 24;            // client -> server
+    session.FinishRunResponse finish_run_response = 25;          // server -> client
+    session.CancelRunRequest cancel_run_request = 26;            // client -> server
+    session.CancelRunResponse cancel_run_response = 27;          // server -> client
 
-    // Gamemap events
-    gamemap.SubscribeViewportRequest subscribe_viewport_request = 30;
-    gamemap.SubscribeViewportResponse subscribe_viewport_response = 31;
-    gamemap.HexagonCaptureEvent hexagon_capture_event = 32;
-    
-    gamemap.RadarPing radar_ping = 33;
+    // --- Offline upload: init -> chunks -> commit ------------------------
+    session.OfflineRunInitRequest offline_run_init_request = 30;       // client -> server
+    session.OfflineRunInitResponse offline_run_init_response = 31;     // server -> client
+    session.OfflineRunChunkRequest offline_run_chunk_request = 32;     // client -> server (repeatable)
+    session.OfflineRunChunkResponse offline_run_chunk_response = 33;   // server -> client
+    session.OfflineRunCommitRequest offline_run_commit_request = 34;   // client -> server
+    session.OfflineRunCommitResponse offline_run_commit_response = 35; // server -> client
+
+    // --- Gamemap / radar --------------------------------------------------
+    gamemap.SubscribeViewportRequest subscribe_viewport_request = 40;
+    gamemap.SubscribeViewportResponse subscribe_viewport_response = 41;
+    gamemap.HexagonCaptureEvent hexagon_capture_event = 42;
+    gamemap.RadarPing radar_ping = 43;
   }
 }

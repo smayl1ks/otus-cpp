@@ -6,7 +6,7 @@ namespace run::network::mappers::testing
 
 TEST(LocationMapperTest, ToTelemetryPoint_MapsAllFields)
 {
-    ::run::proto::location::LocationPoint proto;
+    ::run::proto::telemetry::LocationPoint proto;
     proto.set_latitude(55.7983);
     proto.set_longitude(49.1061);
     proto.set_accuracy(4.2f);
@@ -35,7 +35,7 @@ TEST(LocationMapperTest, ToTelemetryPoint_MapsAllFields)
 
 TEST(LocationMapperTest, ToTelemetryPoints_ConvertsBatch)
 {
-    ::run::proto::location::LocationBatch batch;
+    ::run::proto::telemetry::LocationBatch batch;
     batch.set_session_id("session-123");
     auto* pt1 = batch.add_points();
     pt1->set_latitude(55.0);
@@ -55,7 +55,7 @@ TEST(LocationMapperTest, ToTelemetryPoints_ConvertsBatch)
 
 TEST(LocationMapperTest, RunPoint_RoundTripProtobuf)
 {
-    ::run::proto::location::LocationPoint proto_orig;
+    ::run::proto::telemetry::LocationPoint proto_orig;
     proto_orig.set_latitude(55.8034);
     proto_orig.set_longitude(49.1442);
     proto_orig.set_accuracy(6.0f);
@@ -78,7 +78,7 @@ TEST(LocationMapperTest, RunPoint_RoundTripProtobuf)
     EXPECT_FLOAT_EQ(*entity.heading_degrees, 180.0f);
     EXPECT_EQ(entity.RecordedAtMs(), 1700000005000LL);
 
-    ::run::proto::location::LocationPoint proto_converted;
+    ::run::proto::telemetry::LocationPoint proto_converted;
     LocationMapper::ToProtobuf(entity, proto_converted);
 
     EXPECT_DOUBLE_EQ(proto_converted.latitude(), proto_orig.latitude());
@@ -94,13 +94,13 @@ TEST(LocationMapperTest, AnticheatStatus_RoundTrip)
 {
     using DomainStatus = gameplay::anticheat::AnticheatStatus;
 
-    EXPECT_EQ(LocationMapper::ToProto(DomainStatus::Ok), ::common::ANTICHEAT_STATUS_OK);
-    EXPECT_EQ(LocationMapper::ToProto(DomainStatus::MockDetected), ::common::ANTICHEAT_STATUS_MOCK_DETECTED);
+    EXPECT_EQ(LocationMapper::ToProto(DomainStatus::Ok), ::run::proto::telemetry::ANTICHEAT_STATUS_OK);
+    EXPECT_EQ(LocationMapper::ToProto(DomainStatus::MockDetected), ::run::proto::telemetry::ANTICHEAT_STATUS_MOCK_DETECTED);
     EXPECT_EQ(LocationMapper::ToProto(DomainStatus::TeleportationDetected),
-              ::common::ANTICHEAT_STATUS_TELEPORTATION_DETECTED);
+              ::run::proto::telemetry::ANTICHEAT_STATUS_TELEPORTATION_DETECTED);
 
-    EXPECT_EQ(LocationMapper::FromProto(::common::ANTICHEAT_STATUS_OK), DomainStatus::Ok);
-    EXPECT_EQ(LocationMapper::FromProto(::common::ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED),
+    EXPECT_EQ(LocationMapper::FromProto(::run::proto::telemetry::ANTICHEAT_STATUS_OK), DomainStatus::Ok);
+    EXPECT_EQ(LocationMapper::FromProto(::run::proto::telemetry::ANTICHEAT_STATUS_SPEED_LIMIT_EXCEEDED),
               DomainStatus::SpeedLimitExceeded);
 }
 

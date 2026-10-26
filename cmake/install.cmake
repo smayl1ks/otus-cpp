@@ -1,4 +1,5 @@
-set(SERVICE_NAME ${PROJECT_NAME})
+# Matches service/runner.service.in and the Docker image layout (/opt/runner).
+set(SERVICE_NAME runner)
 
 set(SERVICE_DESCRIPTION    "Outus final project")
 set(SYSTEMD_SERVICE_FOLDER "/lib/systemd/system")
@@ -24,3 +25,8 @@ endif()
 
 install(TARGETS ${PROJECT_NAME}
         DESTINATION ${SERVICE_FOLDER})
+
+# Default configuration; postinst copies it to runner.cfg on first install.
+install(FILES ${PROJECT_SOURCE_DIR}/runner.cfg
+        DESTINATION /etc/${SERVICE_NAME}
+        RENAME runner.cfg.default)
