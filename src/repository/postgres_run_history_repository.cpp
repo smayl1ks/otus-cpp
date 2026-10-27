@@ -129,7 +129,7 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                                        base + 9, base + 10);
 
                         batch.append(static_cast<int64_t>(summary.server_run_id));
-                        batch.append(static_cast<int32_t>(offset + static_cast<std::size_t>(point.point_order)));
+                        batch.append(static_cast<int32_t>(offset + i));
                         batch.append(point.coord.latitude);
                         batch.append(point.coord.longitude);
                         batch.append(point.altitude_meters.has_value() ? std::make_optional(*point.altitude_meters)

@@ -48,12 +48,14 @@ struct BufferConfig
 struct DeferredTrackEvent
 {
     uint64_t run_id{0};
+    char session_id[48]{};
     double latitude{0.0};
     double longitude{0.0};
     double speed{0.0};
     int64_t timestamp{0};
     double delta_meters{0.0};
     int32_t delta_points{0};
+    int64_t sequence_number{0};
 };
 
 /**

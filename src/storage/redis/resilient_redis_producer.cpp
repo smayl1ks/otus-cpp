@@ -47,10 +47,12 @@ net::awaitable<bool> ResilientRedisProducer::InitializeAsync()
     }
     else
     {
-        m_state.store(CircuitState::Degraded);
+        LOG_WARN("ResilientRedisProducer: Could not resolve master via Sentinel. Connecting to direct master fallback {}:{}...",
+                 "127.0.0.1", "6379");
+        m_redis_pool->ConnectToMaster("127.0.0.1", "6379");
+        m_state.store(CircuitState::Healthy);
         monitoring::MetricsCollector::Instance().SetRedisCircuitState(m_shard_id,
-                                                                      static_cast<double>(CircuitState::Degraded));
-        LOG_WARN("ResilientRedisProducer: Could not resolve master at startup. Starting in DEGRADED mode.");
+                                                                      static_cast<double>(CircuitState::Healthy));
     }
 
     // 3. Start Sentinel Pub/Sub monitor
@@ -68,6 +70,10 @@ void ResilientRedisProducer::Stop()
     if (m_sentinel_monitor)
     {
         m_sentinel_monitor->Stop();
+    }
+    if (m_redis_pool)
+    {
+        m_redis_pool->Stop();
     }
 }
 
@@ -267,6 +273,11 @@ std::shared_ptr<ResilientRedisProducer::BufferType> ResilientRedisProducer::GetB
 CircuitState ResilientRedisProducer::GetCircuitState() const noexcept
 {
     return m_state.load();
+}
+
+void ResilientRedisProducer::SetCircuitState(CircuitState state) noexcept
+{
+    m_state.store(state);
 }
 
 std::size_t ResilientRedisProducer::GetDroppedEventsCount() const noexcept

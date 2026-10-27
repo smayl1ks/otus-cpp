@@ -59,6 +59,7 @@ public:
 
     void ConnectToMaster(const std::string& host, const std::string& port);
     void UpdateMaster(const std::string& new_host, const std::string& new_port);
+    void Stop();
 
     net::awaitable<bool> PingAsync();
 
@@ -105,6 +106,14 @@ public:
 
     // List helpers (full track retrieval for finish-time capture resolve)
     net::awaitable<std::vector<std::string>> LRangeAsync(const std::string& key, int64_t start, int64_t stop);
+    net::awaitable<bool> RPushRangeAsync(const std::string& key, const std::vector<std::string>& values,
+                                         std::optional<std::chrono::seconds> ttl = std::nullopt);
+
+    // Set helpers (offline chunks tracking)
+    net::awaitable<int64_t> SAddAsync(const std::string& key, const std::string& member,
+                                      std::optional<std::chrono::seconds> ttl = std::nullopt);
+    net::awaitable<std::vector<std::string>> SMembersAsync(const std::string& key);
+    net::awaitable<int64_t> SCardAsync(const std::string& key);
 
     // Observability and state queries
     bool IsConnected() const noexcept;

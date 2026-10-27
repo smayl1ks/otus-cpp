@@ -38,11 +38,12 @@ def wrap(payload_field, msg):
 async def main():
     auth = http_login()
     ticket = auth["ws_ticket"]
+    session_id = f"e2e-ws-run-{int(time.time())}"
     async with websockets.connect(f"ws://localhost:8081/ws?token={ticket}",
                                   max_size=2**22) as ws:
         # START
         start = session_pb2.StartRunRequest()
-        start.session_id = "e2e-ws-run-1"
+        start.session_id = session_id
         start.team_id = 1
         start.visibility = session_pb2.VISIBILITY_PUBLIC
         start.mode = session_pb2.RUN_MODE_ONLINE
@@ -60,7 +61,7 @@ async def main():
         # BATCHES
         base_ts = int(time.time() * 1000) - 150_000
         for seq in (1, 2):
-            await ws.send(wrap("location_batch", make_batch("e2e-ws-run-1", f"batch-{seq}", seq, base_ts + 80_000 * (seq - 1))))
+            await ws.send(wrap("location_batch", make_batch(session_id, f"batch-{seq}", seq, base_ts + 80_000 * (seq - 1))))
             resp.ParseFromString(await asyncio.wait_for(ws.recv(), 5))
             ack = resp.batch_process_response
             assert ack.anticheat_status == telemetry_pb2.ANTICHEAT_STATUS_OK, ack
@@ -68,7 +69,7 @@ async def main():
 
         # FINISH
         finish = session_pb2.FinishRunRequest()
-        finish.session_id = "e2e-ws-run-1"
+        finish.session_id = session_id
         finish.finish_timestamp = int(time.time() * 1000)
         await ws.send(wrap("finish_run_request", finish))
         resp.ParseFromString(await asyncio.wait_for(ws.recv(), 5))

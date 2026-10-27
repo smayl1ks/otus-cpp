@@ -10,6 +10,11 @@
 #include "repository/in_memory_stores.hpp"
 #include "repository/postgres_run_history_repository.hpp"
 #include "repository/postgres_user_repository.hpp"
+#include "storage/redis/redis_active_run_store.hpp"
+#include "storage/redis/redis_pub_sub_publisher.hpp"
+#include "storage/redis/redis_repository.hpp"
+#include "storage/redis/sentinel_config.hpp"
+#include "storage/redis/sharded_redis_manager.hpp"
 #include "utils/crypto.hpp"
 
 namespace run::server
@@ -78,7 +83,35 @@ ServerDependencies ServerBootstrap::BuildDependencies(context::WorkContext& work
         deps.run_history_repository = std::make_shared<repository::InMemoryRunHistoryRepository>();
     }
 
-    deps.redis_repository = std::make_shared<repository::InMemoryRedisRepository>();
+    const char* force_in_mem = std::getenv("RUN_USE_IN_MEMORY_STORES");
+    const bool use_in_memory = (force_in_mem != nullptr && std::string(force_in_mem) == "1");
+
+    service::running::ServiceDeps service_deps;
+    service_deps.history_repository = deps.run_history_repository;
+
+    if (!use_in_memory)
+    {
+        auto [redis_cfg, buf_cfg] = storage::redis::LoadStorageConfig("runner.cfg");
+        auto redis_manager = std::make_shared<storage::redis::ShardedRedisManager>(
+            work_context.GetExecutor(), std::move(redis_cfg), buf_cfg);
+
+        // ResilientRedisProducer handles Sentinel failover and circuit breaker buffering
+        boost::asio::co_spawn(work_context.GetExecutor(),
+                              redis_manager->InitializeAsync(), boost::asio::detached);
+
+        deps.redis_repository = std::make_shared<repository::RedisRepository>(redis_manager);
+        service_deps.active_run_store = std::make_shared<storage::redis::RedisActiveRunStore>(redis_manager);
+        service_deps.radar_transport = std::make_shared<storage::redis::RedisPubSubPublisher>(redis_manager);
+        LOG_INFO("Redis storage plane active (stateless node with circuit-breaker buffer)");
+    }
+    else
+    {
+        deps.redis_repository = std::make_shared<repository::InMemoryRedisRepository>();
+        auto in_mem_store = std::make_shared<repository::InMemoryActiveRunStore>();
+        service_deps.active_run_store = in_mem_store;
+        service_deps.radar_transport = std::make_shared<service::running::NullPubSubPublisher>();
+        LOG_WARN("Using in-memory persistence plane (dev mode)");
+    }
 
     deps.auth_service = std::make_shared<service::AuthService>(
         deps.user_repository, deps.redis_repository, work_context);
@@ -88,8 +121,6 @@ ServerDependencies ServerBootstrap::BuildDependencies(context::WorkContext& work
 
     deps.protobuf_controller = std::make_shared<controller::ProtobufController>();
 
-    auto service_deps = service::running::MakeStubDeps();
-    service_deps.history_repository = deps.run_history_repository;
     deps.service_stack = std::make_shared<service::running::ServiceStack>(std::move(service_deps));
 
     return deps;

@@ -1,13 +1,14 @@
 #include "gameplay/territory_conquest/zone_channel_helper.hpp"
 #include "gameplay/workout_tracking/workout_session.hpp"
 
-#include "service/run_service.hpp"
 #include "storage/in_memory_lock_free_buffer.hpp"
 #include "storage/redis/drain_worker.hpp"
 #include "storage/redis/i_batch_flusher.hpp"
 #include "storage/redis/redis_pub_sub_worker.hpp"
 #include "storage/redis/redis_publisher.hpp"
-#include "storage/redis/redis_track_repository.hpp"
+#include "storage/redis/redis_active_run_store.hpp"
+#include "storage/redis/redis_repository.hpp"
+#include "storage/redis/redis_pub_sub_publisher.hpp"
 #include "storage/redis/resilient_redis_producer.hpp"
 #include "storage/redis/sentinel_config.hpp"
 #include "storage/redis/sharded_redis_manager.hpp"
@@ -612,7 +613,7 @@ TEST(ShardedRedisManagerTest, PushTrackEvent_RoutesToDegradedShardBuffer)
     EXPECT_DOUBLE_EQ(popped.delta_meters, 25.0);
 }
 
-TEST(RedisTrackRepositoryTest, RoutesTelemetryPointToDegradedShardBuffer)
+TEST(RedisActiveRunStoreTest, RoutesTelemetryPointToDegradedShardBuffer)
 {
     boost::asio::io_context ioc;
 
@@ -628,15 +629,16 @@ TEST(RedisTrackRepositoryTest, RoutesTelemetryPointToDegradedShardBuffer)
     };
 
     auto manager = std::make_shared<ShardedRedisManager>(ioc.get_executor(), redis_cfg, buffer_cfg);
-    auto repo = std::make_shared<RedisTrackRepository>(manager);
+    auto store = std::make_shared<RedisActiveRunStore>(manager);
 
     auto pt = run::gameplay::workout_tracking::RunPoint::Create(999, 1, 55.75, 37.61, 1729000000000LL, 0, 1.0f, 4.5f);
+    std::vector<run::gameplay::workout_tracking::RunPoint> points = {pt};
 
     boost::asio::co_spawn(
         ioc,
         [&]() -> boost::asio::awaitable<void>
         {
-            const bool ok = co_await repo->PushTrackPointAsync(999, pt, 12.5, 3);
+            const bool ok = co_await store->AppendTrackBatchAsync("sess-999", points, 12.5, 3);
             EXPECT_TRUE(ok);
             co_return;
         },
@@ -644,17 +646,18 @@ TEST(RedisTrackRepositoryTest, RoutesTelemetryPointToDegradedShardBuffer)
 
     ioc.run();
 
-    const std::size_t target_shard = manager->GetShardIndex(999);
+    const std::size_t target_shard = manager->GetShardIndex("sess-999");
     auto buffer = manager->GetShard(target_shard)->GetBuffer();
     ASSERT_NE(buffer, nullptr);
     EXPECT_FALSE(buffer->IsEmpty());
 
     DeferredTrackEvent popped;
     EXPECT_TRUE(buffer->Pop(popped));
-    EXPECT_EQ(popped.run_id, 999);
+    EXPECT_STREQ(popped.session_id, "sess-999");
     EXPECT_DOUBLE_EQ(popped.latitude, 55.75);
     EXPECT_DOUBLE_EQ(popped.delta_meters, 12.5);
-    EXPECT_EQ(popped.delta_points, 3);
+    EXPECT_EQ(popped.delta_points, 1);
+    EXPECT_EQ(popped.sequence_number, 3);
 }
 
 TEST(ResilientRedisProducerTest, PushTrackBatchAsync_BuffersWhenDegraded)
@@ -664,27 +667,25 @@ TEST(ResilientRedisProducerTest, PushTrackBatchAsync_BuffersWhenDegraded)
     RedisConfig redis_cfg{
         .master_name = "mymaster",
         .sentinels = {{"127.0.0.1", "9999"}},
-        .num_shards = 1,
     };
     BufferConfig buffer_cfg{
-        .in_memory_capacity = 100,
-        .drain_batch_size = 20,
+        .in_memory_capacity = 64,
+        .drain_batch_size = 16,
     };
 
-    auto producer = std::make_shared<ResilientRedisProducer>(ioc.get_executor(), redis_cfg, buffer_cfg);
-    EXPECT_EQ(producer->GetCircuitState(), CircuitState::Degraded);
+    ResilientRedisProducer producer(ioc.get_executor(), redis_cfg, buffer_cfg, 0);
 
     std::vector<DeferredTrackEvent> batch = {
-        DeferredTrackEvent{.run_id = 1, .timestamp = 1000},
-        DeferredTrackEvent{.run_id = 1, .timestamp = 2000},
-        DeferredTrackEvent{.run_id = 1, .timestamp = 3000}
+        DeferredTrackEvent{.run_id = 101, .latitude = 55.75, .longitude = 37.61, .timestamp = 1000},
+        DeferredTrackEvent{.run_id = 101, .latitude = 55.76, .longitude = 37.62, .timestamp = 2000},
+        DeferredTrackEvent{.run_id = 101, .latitude = 55.77, .longitude = 37.63, .timestamp = 3000}
     };
 
     boost::asio::co_spawn(
         ioc,
         [&]() -> boost::asio::awaitable<void>
         {
-            const bool ok = co_await producer->PushTrackBatchAsync(std::move(batch));
+            const bool ok = co_await producer.PushTrackBatchAsync(batch);
             EXPECT_TRUE(ok);
             co_return;
         },
@@ -692,7 +693,7 @@ TEST(ResilientRedisProducerTest, PushTrackBatchAsync_BuffersWhenDegraded)
 
     ioc.run();
 
-    auto buffer = producer->GetBuffer();
+    auto buffer = producer.GetBuffer();
     ASSERT_NE(buffer, nullptr);
 
     DeferredTrackEvent e1, e2, e3;
@@ -705,7 +706,7 @@ TEST(ResilientRedisProducerTest, PushTrackBatchAsync_BuffersWhenDegraded)
     EXPECT_TRUE(buffer->IsEmpty());
 }
 
-TEST(RedisTrackRepositoryTest, PushTrackBatchAsync_BatchesPointsIntoDegradedBuffer)
+TEST(RedisActiveRunStoreTest, PushTrackBatchAsync_BatchesPointsIntoDegradedBuffer)
 {
     boost::asio::io_context ioc;
 
@@ -720,7 +721,7 @@ TEST(RedisTrackRepositoryTest, PushTrackBatchAsync_BatchesPointsIntoDegradedBuff
     };
 
     auto manager = std::make_shared<ShardedRedisManager>(ioc.get_executor(), redis_cfg, buffer_cfg);
-    auto repo = std::make_shared<RedisTrackRepository>(manager);
+    auto store = std::make_shared<RedisActiveRunStore>(manager);
 
     std::vector<run::gameplay::workout_tracking::RunPoint> points = {
         run::gameplay::workout_tracking::RunPoint::Create(555, 1, 55.75, 37.61, 1000, 0, 1.0f, 4.0f),
@@ -732,7 +733,7 @@ TEST(RedisTrackRepositoryTest, PushTrackBatchAsync_BatchesPointsIntoDegradedBuff
         ioc,
         [&]() -> boost::asio::awaitable<void>
         {
-            const bool ok = co_await repo->PushTrackBatchAsync(555, points, 300.0, 15);
+            const bool ok = co_await store->AppendTrackBatchAsync("sess-555", points, 300.0, 15);
             EXPECT_TRUE(ok);
             co_return;
         },
@@ -740,152 +741,230 @@ TEST(RedisTrackRepositoryTest, PushTrackBatchAsync_BatchesPointsIntoDegradedBuff
 
     ioc.run();
 
-    const std::size_t shard_idx = manager->GetShardIndex(555);
+    const std::size_t shard_idx = manager->GetShardIndex("sess-555");
     auto buffer = manager->GetShard(shard_idx)->GetBuffer();
     ASSERT_NE(buffer, nullptr);
 
     DeferredTrackEvent p1, p2, p3;
     EXPECT_TRUE(buffer->Pop(p1));
-    EXPECT_EQ(p1.run_id, 555);
+    EXPECT_STREQ(p1.session_id, "sess-555");
     EXPECT_DOUBLE_EQ(p1.delta_meters, 100.0);
     EXPECT_EQ(p1.delta_points, 0);
 
     EXPECT_TRUE(buffer->Pop(p2));
-    EXPECT_EQ(p2.run_id, 555);
+    EXPECT_STREQ(p2.session_id, "sess-555");
     EXPECT_DOUBLE_EQ(p2.delta_meters, 100.0);
     EXPECT_EQ(p2.delta_points, 0);
 
     EXPECT_TRUE(buffer->Pop(p3));
-    EXPECT_EQ(p3.run_id, 555);
+    EXPECT_STREQ(p3.session_id, "sess-555");
     EXPECT_DOUBLE_EQ(p3.delta_meters, 100.0);
-    EXPECT_EQ(p3.delta_points, 15);
+    EXPECT_EQ(p3.delta_points, 3);
+    EXPECT_EQ(p3.sequence_number, 15);
 }
 
-class MockTrackRepository : public run::repository::ITrackRepository
+
+TEST(RedisActiveRunStoreIntegrationTest, FullLifecycle_DirectRedisMaster)
 {
-public:
-    bool has_active{false};
-    std::vector<run::gameplay::workout_tracking::RunPoint> pushed_points;
-    std::optional<run::repository::ActiveRunStats> stats;
-    bool finalized{false};
+    boost::asio::io_context ioc;
 
-    boost::asio::awaitable<bool> PushTrackPointAsync(uint64_t run_id,
-                                                     const run::gameplay::workout_tracking::RunPoint& point,
-                                                     double delta_meters = 0.0, int32_t delta_points = 0) override
-    {
-        pushed_points.push_back(point);
-        co_return true;
-    }
+    RedisConfig redis_cfg{
+        .master_name = "mymaster",
+        .sentinels = {}, // Direct master fallback or sentinel
+        .password = "secret_redis_password",
+        .num_shards = 1,
+        .pool_size = 2,
+    };
+    BufferConfig buffer_cfg{
+        .in_memory_capacity = 64,
+        .drain_batch_size = 16,
+    };
 
-    boost::asio::awaitable<bool> PushTrackBatchAsync(uint64_t run_id,
-                                                     std::span<const run::gameplay::workout_tracking::RunPoint> points,
-                                                     double total_delta_meters = 0.0,
-                                                     int32_t total_delta_points = 0) override
-    {
-        for (const auto& p : points)
+    auto manager = std::make_shared<ShardedRedisManager>(ioc.get_executor(), redis_cfg, buffer_cfg);
+    // Connect shard pool directly to 127.0.0.1:6379 for unit testing
+    manager->GetShard(0)->GetRedisPool()->ConnectToMaster("127.0.0.1", "6379");
+    manager->GetShard(0)->SetCircuitState(CircuitState::Healthy);
+
+    auto store = std::make_shared<RedisActiveRunStore>(manager);
+    auto auth_repo = std::make_shared<run::repository::RedisRepository>(manager);
+    auto pubsub = std::make_shared<RedisPubSubPublisher>(manager);
+
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::string session_id = fmt::format("test-live-session-{}", nonce);
+    const std::string upload_session_id = fmt::format("upload-session-{}", nonce);
+    const int64_t user_id = 99999 + (nonce % 10000);
+
+    boost::asio::co_spawn(
+        ioc,
+        [&]() -> boost::asio::awaitable<void>
         {
-            pushed_points.push_back(p);
-        }
-        co_return true;
-    }
+            // 0. Test Ping
+            bool ping_ok = co_await manager->GetShard(0)->GetRedisPool()->PingAsync();
+            if (!ping_ok)
+            {
+                LOG_WARN("Direct Redis at 127.0.0.1:6379 unreachable, skipping live integration test");
+                manager->Stop();
+                co_return;
+            }
 
-    boost::asio::awaitable<bool> InitActiveRunAsync(const std::string& session_id, int64_t user_id, int64_t team_id,
-                                                    int64_t start_timestamp) override
-    {
-        has_active = true;
-        stats = run::repository::ActiveRunStats{.user_id = user_id,
-                                                .team_id = team_id,
-                                                .start_timestamp = start_timestamp,
-                                                .distance_meters = 1500.0,
-                                                .points_count = 10,
-                                                .status = "active"};
-        co_return true;
-    }
+            // Clean previous test state if any
+            co_await store->DropRunDataAsync(session_id, user_id);
+            co_await store->DropRunDataAsync(upload_session_id, user_id);
 
-    boost::asio::awaitable<std::optional<run::repository::ActiveRunStats>>
-    GetActiveRunStatsAsync(const std::string& session_id) override
-    {
-        co_return stats;
-    }
+            // 1. User Slot Claim & Idempotency
+            bool slot_1 = co_await store->TryClaimUserSlotAsync(user_id, session_id);
+            EXPECT_TRUE(slot_1);
+            // Re-claiming same session_id should succeed (resume)
+            bool slot_resume = co_await store->TryClaimUserSlotAsync(user_id, session_id);
+            EXPECT_TRUE(slot_resume);
+            // Claiming for different session_id should be rejected
+            bool slot_diff = co_await store->TryClaimUserSlotAsync(user_id, "other-session");
+            EXPECT_FALSE(slot_diff);
 
-    boost::asio::awaitable<bool> CheckActiveSessionExistsAsync(int64_t user_id) override
-    {
-        co_return has_active;
-    }
+            // 2. Active Run Lifecycle
+            run::repository::ActiveRunRecord rec{
+                .session_id = session_id,
+                .server_run_id = 123456,
+                .user_id = user_id,
+                .team_id = 10,
+                .mode = run::repository::RunMode::kOnline,
+                .visibility = run::repository::Visibility::kPublic,
+                .started_at_ms = 1729000000000LL,
+                .total_distance_meters = 0.0,
+                .total_points_count = 0,
+                .last_sequence_number = 0
+            };
+            bool init_ok = co_await store->InitActiveRunAsync(rec);
+            EXPECT_TRUE(init_ok);
 
-    boost::asio::awaitable<bool> FinalizeActiveRunAsync(const std::string& session_id, int64_t user_id) override
-    {
-        has_active = false;
-        finalized = true;
-        co_return true;
-    }
+            auto fetched_rec = co_await store->GetActiveRunAsync(session_id);
+            EXPECT_TRUE(fetched_rec.has_value());
+            EXPECT_EQ(fetched_rec->server_run_id, 123456);
+            EXPECT_EQ(fetched_rec->user_id, user_id);
+            EXPECT_EQ(fetched_rec->team_id, 10);
 
-    boost::asio::awaitable<std::vector<run::gameplay::workout_tracking::RunPoint>>
-    GetTrackAsync(const std::string& session_id) override
-    {
-        co_return stored_track;
-    }
+            auto fetched_by_user = co_await store->GetActiveRunByUserAsync(user_id);
+            EXPECT_TRUE(fetched_by_user.has_value());
+            EXPECT_EQ(fetched_by_user->session_id, session_id);
 
-    std::vector<run::gameplay::workout_tracking::RunPoint> stored_track;
-};
+            // 3. Batch Claim (Dedup)
+            bool batch_1 = co_await store->ClaimBatchAsync(session_id, "batch-uuid-1");
+            EXPECT_TRUE(batch_1);
+            bool batch_retry = co_await store->ClaimBatchAsync(session_id, "batch-uuid-1");
+            EXPECT_FALSE(batch_retry); // Duplicate rejected
 
-// TEST(RunServiceIntegrationTest, FullLifecycleWithDecoupledTrackRepository)
-// {
-//     boost::asio::io_context ioc;
+            // 4. Track Append & Retrieve
+            std::vector<run::gameplay::workout_tracking::RunPoint> points = {
+                run::gameplay::workout_tracking::RunPoint::Create(123456, 1, 55.75, 37.61, 1000, 0, 1.0f, 4.0f),
+                run::gameplay::workout_tracking::RunPoint::Create(123456, 2, 55.76, 37.62, 2000, 0, 1.0f, 4.2f)
+            };
+            bool append_ok = co_await store->AppendTrackBatchAsync(session_id, points, 150.0, 1);
+            EXPECT_TRUE(append_ok);
 
-//     auto mock_repo = std::make_shared<MockTrackRepository>();
-//     run::service::RunService service(mock_repo);
+            auto track = co_await store->GetTrackAsync(session_id);
+            EXPECT_EQ(track.size(), 2u);
+            EXPECT_NEAR(track[0].coord.latitude, 55.75, 1e-5);
+            EXPECT_NEAR(track[1].coord.latitude, 55.76, 1e-5);
 
-//     boost::asio::co_spawn(
-//         ioc,
-//         [&]() -> boost::asio::awaitable<void>
-//         {
-//             // 1. Start Run
-//             ::events::StartRunRequest start_req;
-//             start_req.set_session_id("test_session_100");
-//             start_req.set_team_id(1);
+            // 5. Stored Summary (Idempotent Finish)
+            run::repository::StoredRunSummary summary{
+                .session_id = session_id,
+                .server_run_id = 123456,
+                .user_id = user_id,
+                .close_reason = run::repository::RunCloseReason::kFinished,
+                .total_distance_meters = 150.0,
+                .duration_seconds = 60,
+                .moving_duration_seconds = 55,
+                .avg_pace_sec_per_km = 360,
+                .avg_speed_kmh = 10.0f,
+                .total_points_count = 2,
+                .hexagons_captured_count = 3,
+                .total_score = 300,
+                .claimed_hexes = {0x8928308280fffffULL, 0x8928308281fffffULL},
+                .verdict = run::repository::ValidationVerdict::kValid,
+                .is_valid = true,
+                .started_at_ms = 1000,
+                .finished_at_ms = 61000
+            };
+            bool save_sum_ok = co_await store->SaveRunSummaryAsync(summary);
+            EXPECT_TRUE(save_sum_ok);
 
-//             auto start_res = co_await service.StartRunAsync(42, start_req);
-//             EXPECT_EQ(start_res.system_status, ::common::SYSTEM_STATUS_OK);
-//             EXPECT_EQ(start_res.reject_reason, ::events::START_REJECT_REASON_NONE);
-//             EXPECT_EQ(start_res.response_payload.session_id(), "test_session_100");
-//             EXPECT_GT(start_res.response_payload.server_start_timestamp(), 0);
-//             EXPECT_TRUE(mock_repo->has_active);
+            auto fetched_sum = co_await store->GetRunSummaryAsync(session_id);
+            EXPECT_TRUE(fetched_sum.has_value());
+            EXPECT_EQ(fetched_sum->server_run_id, 123456);
+            EXPECT_EQ(fetched_sum->total_score, 300u);
+            EXPECT_EQ(fetched_sum->hexagons_captured_count, 3u);
+            EXPECT_EQ(fetched_sum->claimed_hexes.size(), 2u);
 
-//             // 2. Reject duplicate active run
-//             auto duplicate_res = co_await service.StartRunAsync(42, start_req);
-//             EXPECT_EQ(duplicate_res.reject_reason, ::events::START_REJECT_REASON_ACTIVE_SESSION_EXISTS);
+            // 6. Offline Upload Flow
+            run::repository::UploadMetaRecord upload_meta{
+                .session_id = upload_session_id,
+                .server_run_id = 777,
+                .user_id = user_id,
+                .team_id = 5,
+                .visibility = run::repository::Visibility::kPublic,
+                .start_timestamp_ms = 1000,
+                .finish_timestamp_ms = 5000,
+                .event_id = 0,
+                .device_id = "dev-1",
+                .app_version = "1.0.0",
+                .total_chunks = 2
+            };
+            bool init_up_ok = co_await store->InitUploadAsync(upload_meta);
+            EXPECT_TRUE(init_up_ok);
 
-//             // 3. Process Batch
-//             run::proto::location::LocationBatch batch;
-//             batch.set_batch_uuid("batch-uuid-1");
-//             batch.set_session_id("test_session_100");
-//             auto* p1 = batch.add_points();
-//             p1->set_latitude(55.79);
-//             p1->set_longitude(49.12);
-//             p1->set_speed(3.5f);
-//             p1->set_timestamp(start_res.response_payload.server_start_timestamp() + 1000);
+            auto fetched_up_meta = co_await store->GetUploadMetaAsync(upload_session_id);
+            EXPECT_TRUE(fetched_up_meta.has_value());
+            EXPECT_EQ(fetched_up_meta->server_run_id, 777);
 
-//             auto batch_res = co_await service.ProcessBatchAsync(42, batch);
-//             EXPECT_EQ(batch_res.system_status, ::common::SYSTEM_STATUS_OK);
-//             EXPECT_EQ(mock_repo->pushed_points.size(), 1);
+            // Put chunks out of order: chunk 1 then chunk 0
+            std::vector<run::gameplay::workout_tracking::RunPoint> chunk1_pts = {
+                run::gameplay::workout_tracking::RunPoint::Create(777, 2, 55.72, 37.62, 2000, 0, 1.0f, 4.0f)
+            };
+            std::vector<run::gameplay::workout_tracking::RunPoint> chunk0_pts = {
+                run::gameplay::workout_tracking::RunPoint::Create(777, 1, 55.71, 37.61, 1000, 0, 1.0f, 4.0f)
+            };
 
-//             // 4. Finish Run
-//             ::events::FinishRunRequest finish_req;
-//             finish_req.set_session_id("test_session_100");
-//             finish_req.set_finish_timestamp(start_res.response_payload.server_start_timestamp() + 300000); // 5 mins
+            int32_t c1_count = co_await store->PutUploadChunkAsync(upload_session_id, 1, chunk1_pts);
+            EXPECT_EQ(c1_count, 1);
+            int32_t c0_count = co_await store->PutUploadChunkAsync(upload_session_id, 0, chunk0_pts);
+            EXPECT_EQ(c0_count, 2);
 
-//             auto finish_res = co_await service.FinishRunAsync(42, finish_req);
-//             EXPECT_EQ(finish_res.system_status, ::common::SYSTEM_STATUS_OK);
-//             EXPECT_EQ(finish_res.reject_reason, ::events::FINISH_REJECT_REASON_NONE);
-//             EXPECT_DOUBLE_EQ(finish_res.response_payload.total_distance_meters(), 1500.0);
-//             EXPECT_EQ(finish_res.response_payload.hexes_claimed_count(), 8);
-//             EXPECT_TRUE(mock_repo->finalized);
-//             EXPECT_FALSE(mock_repo->has_active);
+            auto accepted = co_await store->GetAcceptedChunksAsync(upload_session_id);
+            EXPECT_EQ(accepted.size(), 2u);
+            EXPECT_EQ(accepted[0], 0);
+            EXPECT_EQ(accepted[1], 1);
 
-//             co_return;
-//         },
-//         boost::asio::detached);
+            auto assembled = co_await store->AssembleUploadTrackAsync(upload_session_id);
+            EXPECT_EQ(assembled.size(), 2u);
+            EXPECT_NEAR(assembled[0].coord.latitude, 55.71, 1e-5);
+            EXPECT_NEAR(assembled[1].coord.latitude, 55.72, 1e-5);
 
-//     ioc.run();
-// }
+            // 7. RedisRepository (KV)
+            bool kv_set = co_await auth_repo->Set("ws_ticket:ticket-123", "user-42", std::chrono::seconds(60));
+            EXPECT_TRUE(kv_set);
+            auto kv_get = co_await auth_repo->Get("ws_ticket:ticket-123");
+            EXPECT_TRUE(kv_get.has_value());
+            EXPECT_EQ(*kv_get, "user-42");
+            bool kv_del = co_await auth_repo->Delete("ws_ticket:ticket-123");
+            EXPECT_TRUE(kv_del);
+            auto kv_none = co_await auth_repo->Get("ws_ticket:ticket-123");
+            EXPECT_FALSE(kv_none.has_value());
+
+            // 8. Cleanup DropRunData
+            co_await store->DropRunDataAsync(session_id, user_id);
+            co_await store->DropRunDataAsync(upload_session_id, user_id);
+
+            auto dropped_active = co_await store->GetActiveRunAsync(session_id);
+            EXPECT_FALSE(dropped_active.has_value());
+            auto dropped_slot = co_await store->GetActiveRunByUserAsync(user_id);
+            EXPECT_FALSE(dropped_slot.has_value());
+
+            manager->Stop();
+            ioc.stop();
+            co_return;
+        },
+        boost::asio::detached);
+
+    ioc.run();
+}

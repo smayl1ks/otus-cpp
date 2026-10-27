@@ -56,7 +56,8 @@ net::awaitable<bool> SentinelMonitor::TryResolveFromSentinel(const SentinelNode&
 
     boost::redis::response<std::optional<std::vector<std::string>>> resp;
 
-    co_await conn->async_exec(req, resp, net::redirect_error(net::use_awaitable, ec));
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(std::chrono::seconds(2), net::redirect_error(net::use_awaitable, ec)));
 
     conn->cancel();
 

@@ -7,5 +7,7 @@ target_sources(${PROJECT_NAME}_lib PRIVATE
     redis/redis_pub_sub_worker.cpp
     redis/redis_publisher.cpp
     redis/sharded_redis_manager.cpp
-    redis/redis_track_repository.cpp
+    redis/redis_active_run_store.cpp
+    redis/redis_repository.cpp
+    redis/redis_pub_sub_publisher.cpp
 )

@@ -65,6 +65,7 @@ public:
     std::shared_ptr<BufferType> GetBuffer() const noexcept;
 
     CircuitState GetCircuitState() const noexcept;
+    void SetCircuitState(CircuitState state) noexcept;
     std::size_t GetDroppedEventsCount() const noexcept;
     std::size_t GetShardId() const noexcept;
 

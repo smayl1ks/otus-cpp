@@ -93,7 +93,9 @@ void ShardedRedisManager::Stop()
 
 net::awaitable<bool> ShardedRedisManager::PushTrackEventAsync(DeferredTrackEvent event)
 {
-    const std::size_t shard_idx = GetShardIndex(event.run_id);
+    const std::size_t shard_idx = (event.session_id[0] != '\0')
+                                      ? GetShardIndex(std::string_view(event.session_id))
+                                      : GetShardIndex(event.run_id);
     co_return co_await m_shards[shard_idx]->PushTrackEventAsync(event);
 }
 
@@ -109,12 +111,14 @@ net::awaitable<bool> ShardedRedisManager::PushTrackBatchAsync(std::vector<Deferr
         co_return false;
     }
 
-    // Common case: batch is from a single runner / run_id
-    const uint64_t first_run_id = events[0].run_id;
+    const std::string first_id = (events[0].session_id[0] != '\0') ? std::string(events[0].session_id)
+                                                                    : std::to_string(events[0].run_id);
     bool single_run = true;
     for (std::size_t i = 1; i < events.size(); ++i)
     {
-        if (events[i].run_id != first_run_id)
+        const std::string cur_id = (events[i].session_id[0] != '\0') ? std::string(events[i].session_id)
+                                                                     : std::to_string(events[i].run_id);
+        if (cur_id != first_id)
         {
             single_run = false;
             break;
@@ -123,15 +127,18 @@ net::awaitable<bool> ShardedRedisManager::PushTrackBatchAsync(std::vector<Deferr
 
     if (single_run)
     {
-        const std::size_t shard_idx = GetShardIndex(first_run_id);
+        const std::size_t shard_idx = (events[0].session_id[0] != '\0')
+                                          ? GetShardIndex(std::string_view(events[0].session_id))
+                                          : GetShardIndex(events[0].run_id);
         co_return co_await m_shards[shard_idx]->PushTrackBatchAsync(std::move(events));
     }
 
-    // If batch contains multiple run_ids, dispatch to their respective shards
     std::unordered_map<std::size_t, std::vector<DeferredTrackEvent>> shard_batches;
     for (auto& ev : events)
     {
-        shard_batches[GetShardIndex(ev.run_id)].push_back(std::move(ev));
+        const std::size_t s_idx = (ev.session_id[0] != '\0') ? GetShardIndex(std::string_view(ev.session_id))
+                                                             : GetShardIndex(ev.run_id);
+        shard_batches[s_idx].push_back(std::move(ev));
     }
 
     bool all_ok = true;
@@ -288,6 +295,33 @@ net::awaitable<std::vector<std::string>> ShardedRedisManager::LRangeAsync(const 
 {
     const std::size_t shard_idx = GetShardIndex(key);
     co_return co_await m_shards[shard_idx]->GetRedisPool()->LRangeAsync(key, start, stop);
+}
+
+net::awaitable<bool> ShardedRedisManager::RPushRangeAsync(const std::string& key,
+                                                           const std::vector<std::string>& values,
+                                                           std::optional<std::chrono::seconds> ttl)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->RPushRangeAsync(key, values, ttl);
+}
+
+net::awaitable<int64_t> ShardedRedisManager::SAddAsync(const std::string& key, const std::string& member,
+                                                      std::optional<std::chrono::seconds> ttl)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->SAddAsync(key, member, ttl);
+}
+
+net::awaitable<std::vector<std::string>> ShardedRedisManager::SMembersAsync(const std::string& key)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->SMembersAsync(key);
+}
+
+net::awaitable<int64_t> ShardedRedisManager::SCardAsync(const std::string& key)
+{
+    const std::size_t shard_idx = GetShardIndex(key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->SCardAsync(key);
 }
 
 std::size_t ShardedRedisManager::GetShardIndex(uint64_t key) const noexcept

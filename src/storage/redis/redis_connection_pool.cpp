@@ -74,6 +74,20 @@ void RedisConnectionPool::UpdateMaster(const std::string& new_host, const std::s
     ConnectToMaster(new_host, new_port);
 }
 
+void RedisConnectionPool::Stop()
+{
+    std::lock_guard lock(m_mutex);
+    m_is_connected = false;
+    for (auto& conn : m_connections)
+    {
+        if (conn)
+        {
+            conn->cancel();
+        }
+    }
+    m_connections.clear();
+}
+
 std::shared_ptr<boost::redis::connection> RedisConnectionPool::GetConnection() const
 {
     std::lock_guard lock(m_mutex);
@@ -277,47 +291,54 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
 
     struct RunBatchAggregate
     {
+        uint64_t numeric_run_id{0};
         std::vector<std::string> points;
         double total_delta_meters{0.0};
         int32_t total_delta_points{0};
+        int64_t last_sequence_number{0};
     };
 
-    std::unordered_map<uint64_t, RunBatchAggregate> grouped;
+    std::unordered_map<std::string, RunBatchAggregate> grouped;
     for (const auto& ev : batch)
     {
-        auto& data = grouped[ev.run_id];
+        const std::string id_str = (ev.session_id[0] != '\0') ? std::string(ev.session_id) : std::to_string(ev.run_id);
+        auto& data = grouped[id_str];
+        data.numeric_run_id = ev.run_id;
         data.points.push_back(fmt::format("{},{},{},{}", ev.latitude, ev.longitude, ev.speed, ev.timestamp));
         data.total_delta_meters += ev.delta_meters;
         data.total_delta_points += ev.delta_points;
+        data.last_sequence_number = std::max(data.last_sequence_number, ev.sequence_number);
     }
 
     boost::redis::request req;
     const auto now_sec =
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
-    for (const auto& [run_id, data] : grouped)
+    for (const auto& [id_str, data] : grouped)
     {
-        const std::string track_key = fmt::format("run:track:{}", run_id);
-        const std::string active_key = fmt::format("run:active:{}", run_id);
+        const std::string track_key = fmt::format("run:track:{}", id_str);
+        const std::string active_key = fmt::format("run:active:{}", id_str);
 
         req.push_range("RPUSH", track_key, data.points.begin(), data.points.end());
 
         if (data.total_delta_meters > 0.0)
         {
+            req.push("HINCRBYFLOAT", active_key, "total_distance_meters", fmt::format("{:.2f}", data.total_delta_meters));
             req.push("HINCRBYFLOAT", active_key, "distance_meters", fmt::format("{:.2f}", data.total_delta_meters));
         }
         if (data.total_delta_points > 0)
         {
+            req.push("HINCRBY", active_key, "total_points_count", std::to_string(data.total_delta_points));
             req.push("HINCRBY", active_key, "points_count", std::to_string(data.total_delta_points));
         }
-
-        // Only emit EXPIRE once every 30-60 seconds per run
-        if (ShouldRefreshTtl(run_id))
+        if (data.last_sequence_number > 0)
         {
-            req.push("EXPIRE", track_key, "86400");
-            req.push("EXPIRE", active_key, "86400");
-            req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
+            req.push("HSET", active_key, "last_sequence_number", std::to_string(data.last_sequence_number));
         }
+
+        req.push("EXPIRE", track_key, "86400");
+        req.push("EXPIRE", active_key, "86400");
+        req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
     }
 
     boost::redis::generic_response resp;
@@ -442,6 +463,7 @@ net::awaitable<bool> RedisConnectionPool::SetAsync(const std::string& key, const
     auto conn = GetConnection();
     if (!conn)
     {
+        LOG_WARN("SET {} failed: no active connection in pool", key);
         co_return false;
     }
 
@@ -454,7 +476,13 @@ net::awaitable<bool> RedisConnectionPool::SetAsync(const std::string& key, const
     co_await conn->async_exec(req, resp,
                               net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
 
-    co_return !ec;
+    if (ec)
+    {
+        LOG_WARN("SET {} failed: {}", key, ec.message());
+        co_return false;
+    }
+
+    co_return true;
 }
 
 net::awaitable<std::optional<bool>> RedisConnectionPool::SetNxAsync(const std::string& key,
@@ -736,6 +764,144 @@ net::awaitable<std::vector<std::string>> RedisConnectionPool::LRangeAsync(const 
     }
 
     co_return result;
+}
+
+net::awaitable<bool> RedisConnectionPool::RPushRangeAsync(const std::string& key,
+                                                           const std::vector<std::string>& values,
+                                                           std::optional<std::chrono::seconds> ttl)
+{
+    if (values.empty())
+    {
+        co_return true;
+    }
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return false;
+    }
+
+    boost::redis::request req;
+    req.push_range("RPUSH", key, values.begin(), values.end());
+    if (ttl.has_value())
+    {
+        req.push("EXPIRE", key, std::to_string(ttl->count()));
+    }
+
+    boost::redis::generic_response resp;
+    boost::system::error_code ec;
+
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+
+    if (ec)
+    {
+        LOG_WARN("RPUSH {} failed: {}", key, ec.message());
+        co_return false;
+    }
+    co_return true;
+}
+
+net::awaitable<int64_t> RedisConnectionPool::SAddAsync(const std::string& key, const std::string& member,
+                                                      std::optional<std::chrono::seconds> ttl)
+{
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return -1;
+    }
+
+    boost::redis::request req;
+    req.push("SADD", key, member);
+    if (ttl.has_value())
+    {
+        req.push("EXPIRE", key, std::to_string(ttl->count()));
+    }
+
+    boost::redis::generic_response resp;
+    boost::system::error_code ec;
+
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+
+    if (ec)
+    {
+        LOG_WARN("SADD {} failed: {}", key, ec.message());
+        co_return -1;
+    }
+
+    if (resp.has_value() && !resp.value().empty())
+    {
+        try
+        {
+            co_return std::stoll(resp.value().front().value);
+        }
+        catch (...)
+        {
+            co_return 1;
+        }
+    }
+    co_return 0;
+}
+
+net::awaitable<std::vector<std::string>> RedisConnectionPool::SMembersAsync(const std::string& key)
+{
+    std::vector<std::string> result;
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return result;
+    }
+
+    boost::redis::request req;
+    req.push("SMEMBERS", key);
+
+    boost::redis::response<std::vector<std::string>> resp;
+    boost::system::error_code ec;
+
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+
+    if (ec)
+    {
+        LOG_WARN("SMEMBERS {} failed: {}", key, ec.message());
+        co_return result;
+    }
+
+    if (const auto& vec_opt = std::get<0>(resp); vec_opt.has_value())
+    {
+        result = std::move(vec_opt.value());
+    }
+    co_return result;
+}
+
+net::awaitable<int64_t> RedisConnectionPool::SCardAsync(const std::string& key)
+{
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return 0;
+    }
+
+    boost::redis::request req;
+    req.push("SCARD", key);
+
+    boost::redis::response<int64_t> resp;
+    boost::system::error_code ec;
+
+    co_await conn->async_exec(req, resp,
+                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+
+    if (ec)
+    {
+        LOG_WARN("SCARD {} failed: {}", key, ec.message());
+        co_return 0;
+    }
+
+    if (const auto& res_opt = std::get<0>(resp); res_opt.has_value())
+    {
+        co_return res_opt.value();
+    }
+    co_return 0;
 }
 
 } // namespace run::storage::redis
