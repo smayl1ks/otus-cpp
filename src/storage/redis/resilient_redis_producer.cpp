@@ -47,9 +47,12 @@ net::awaitable<bool> ResilientRedisProducer::InitializeAsync()
     }
     else
     {
-        LOG_WARN("ResilientRedisProducer: Could not resolve master via Sentinel. Connecting to direct master fallback {}:{}...",
-                 "127.0.0.1", "6379");
-        m_redis_pool->ConnectToMaster("127.0.0.1", "6379");
+        const char* env_host = std::getenv("REDIS_HOST");
+        const std::string fallback_host = (env_host && env_host[0] != '\0') ? env_host : "redis";
+        LOG_WARN("ResilientRedisProducer: Could not resolve master via Sentinel. Connecting to direct master fallback "
+                 "{}:{}...",
+                 fallback_host, "6379");
+        m_redis_pool->ConnectToMaster(fallback_host, "6379");
         m_state.store(CircuitState::Healthy);
         monitoring::MetricsCollector::Instance().SetRedisCircuitState(m_shard_id,
                                                                       static_cast<double>(CircuitState::Healthy));
@@ -75,56 +78,6 @@ void ResilientRedisProducer::Stop()
     {
         m_redis_pool->Stop();
     }
-}
-
-net::awaitable<bool> ResilientRedisProducer::PushTrackEventAsync(DeferredTrackEvent event)
-{
-    const auto current_state = m_state.load();
-
-    if (current_state == CircuitState::Healthy)
-    {
-        // Direct push to Redis
-        bool write_ok = co_await m_redis_pool->PushTrackPointAsync(event.run_id, event.latitude, event.longitude,
-                                                                   event.speed, event.timestamp);
-
-        if (write_ok && (event.delta_meters > 0.0 || event.delta_points > 0))
-        {
-            write_ok =
-                co_await m_redis_pool->UpdateActiveRunStatsAsync(event.run_id, event.delta_meters, event.delta_points);
-        }
-
-        if (write_ok)
-        {
-            m_consecutive_failures.store(0);
-            co_return true;
-        }
-
-        // Write failed: trip circuit breaker counter
-        const auto failures = ++m_consecutive_failures;
-        LOG_WARN("Direct Redis write failed (failure count: {}). Falling back to in-memory buffer.", failures);
-
-        if (failures >= m_failure_threshold)
-        {
-            m_state.store(CircuitState::Degraded);
-            monitoring::MetricsCollector::Instance().SetRedisCircuitState(m_shard_id,
-                                                                          static_cast<double>(CircuitState::Degraded));
-            LOG_CRITICAL(">>> Circuit Breaker TRIPPED to DEGRADED state! Redis Master is unreachable. <<<");
-        }
-    }
-
-    // Degraded or Draining state (or fallback on error): write to Lock-Free Buffer
-    const bool pushed = m_buffer->Push(event);
-
-    if (!pushed)
-    {
-        m_dropped_events++;
-        monitoring::MetricsCollector::Instance().IncrementDroppedEvents(m_shard_id);
-        LOG_CRITICAL("InMemoryLockFreeBuffer OVERFLOW! Dropping telemetry event for run {} (total dropped: {})",
-                     event.run_id, m_dropped_events.load());
-        co_return false;
-    }
-
-    co_return true;
 }
 
 net::awaitable<bool> ResilientRedisProducer::PushTrackBatchAsync(std::vector<DeferredTrackEvent> events)
@@ -171,8 +124,7 @@ net::awaitable<bool> ResilientRedisProducer::PushTrackBatchAsync(std::vector<Def
 
     if (!all_pushed)
     {
-        LOG_CRITICAL("InMemoryLockFreeBuffer OVERFLOW during batch push (total dropped: {})",
-                     m_dropped_events.load());
+        LOG_CRITICAL("InMemoryLockFreeBuffer OVERFLOW during batch push (total dropped: {})", m_dropped_events.load());
     }
 
     co_return all_pushed;

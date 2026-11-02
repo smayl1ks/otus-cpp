@@ -10,4 +10,5 @@ target_sources(${PROJECT_NAME}_lib PRIVATE
     redis/redis_active_run_store.cpp
     redis/redis_repository.cpp
     redis/redis_pub_sub_publisher.cpp
+    redis/redis_hex_map_cache.cpp
 )

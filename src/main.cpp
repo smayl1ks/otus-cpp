@@ -4,9 +4,16 @@
 
 #include <filesystem>
 #include <iostream>
+#include <sodium.h>
 
 int main(int argc, char* argv[])
 {
+    if (sodium_init() < 0)
+    {
+        std::cerr << "Fatal: Failed to initialize libsodium\n";
+        return 1;
+    }
+
     try
     {
         const auto& server_config = config::ServerConfig::Get(argc, argv);

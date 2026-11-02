@@ -6,6 +6,7 @@
 
 #include <boost/asio.hpp>
 #include <boost/asio/awaitable.hpp>
+#include <boost/redis/request.hpp>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,8 +33,8 @@ public:
     net::awaitable<bool> InitializeAsync();
     void Stop();
 
-    // Hot-path Telemetry Ingestion (sharded by run_id)
-    net::awaitable<bool> PushTrackEventAsync(DeferredTrackEvent event);
+    // Hot-path Telemetry Ingestion (sharded by session, write-through with
+    // circuit-breaker buffer fallback)
     net::awaitable<bool> PushTrackBatchAsync(std::vector<DeferredTrackEvent> events);
 
     // WebSocket Ticket Management (sharded by ticket token)
@@ -72,6 +73,17 @@ public:
     net::awaitable<std::optional<std::string>> HGetAsync(const std::string& key, const std::string& field);
     net::awaitable<std::unordered_map<std::string, std::string>> HGetAllAsync(const std::string& key);
 
+    /// Pipelined HGETALL of many keys: keys are grouped per shard, one
+    /// request per shard. Results ordered per input key.
+    net::awaitable<std::vector<std::unordered_map<std::string, std::string>>>
+    HGetAllManyAsync(const std::vector<std::string>& keys);
+
+    /// Executes a pre-built multi-command request in one round trip on the
+    /// shard owning route_key. Shard affinity is the caller's job: with the
+    /// production single-shard fleet every key of a batch lands together
+    /// (see R10 in docs/CODE_REVIEW_2026-10-31.md).
+    net::awaitable<bool> ExecBatchAsync(const std::string& route_key, const boost::redis::request& commands);
+
     // List helpers (track retrieval)
     net::awaitable<std::vector<std::string>> LRangeAsync(const std::string& key, int64_t start, int64_t stop);
     net::awaitable<bool> RPushRangeAsync(const std::string& key, const std::vector<std::string>& values,
@@ -82,8 +94,6 @@ public:
                                       std::optional<std::chrono::seconds> ttl = std::nullopt);
     net::awaitable<std::vector<std::string>> SMembersAsync(const std::string& key);
     net::awaitable<int64_t> SCardAsync(const std::string& key);
-
-    void InvalidateTtl(uint64_t run_id);
 
     // Shard routing queries
     std::size_t GetShardIndex(uint64_t key) const noexcept;

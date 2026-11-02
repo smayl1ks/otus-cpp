@@ -1,6 +1,6 @@
 #include "network/server/session_manager.hpp"
-#include "network/server/user_session.hpp"
 #include "monitoring/metrics_collector.hpp"
+#include "network/server/user_session.hpp"
 
 namespace run::server::session
 {
@@ -85,32 +85,10 @@ void SessionManager::RemoveSession(uint64_t user_id, SessionRawPtr raw_ptr)
 
 void SessionManager::BroadcastToZone(uint64_t h3_zone, const std::string& payload)
 {
-    std::vector<SessionPtr> target_sessions;
+    std::vector<SessionPtr> target_sessions; // TODO: Optimize target_sessions allocation for high-density zones
     {
         std::shared_lock lock(m_mutex);
         if (auto it = m_zone_subscribers.find(h3_zone); it != m_zone_subscribers.end())
-        {
-            target_sessions.reserve(it->second.size());
-            for (const auto& session : it->second)
-            {
-                target_sessions.push_back(session);
-            }
-        }
-    }
-
-    // Send() is thread-safe (concurrent channel) and never blocks.
-    for (const auto& session : target_sessions)
-    {
-        session->Send(payload);
-    }
-}
-
-void SessionManager::SendToUser(uint64_t user_id, const std::string& payload)
-{
-    std::vector<SessionPtr> target_sessions;
-    {
-        std::shared_lock lock(m_mutex);
-        if (auto it = m_user_sessions.find(user_id); it != m_user_sessions.end())
         {
             target_sessions.reserve(it->second.size());
             for (const auto& session : it->second)
@@ -141,7 +119,7 @@ void SessionManager::CloseAllSessions()
 
     for (const auto& session : sessions)
     {
-        session->RequestClose();
+        session->RequestClose(1001);
     }
 }
 

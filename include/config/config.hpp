@@ -96,9 +96,6 @@ public:
 
     std::string GetRootPassword() const;
 
-    /// HMAC key for access tokens. Resolution order:
-    ///   1. auth.jwt-secret (env JWT_ACCESS_SECRET / RUNNER_ROOT_PASSWORD / config);
-    ///   2. server.root.password;
     std::string GetJwtSecret() const;
 };
 

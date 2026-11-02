@@ -1,5 +1,7 @@
 #include "gameplay/anticheat/anticheat.hpp"
 
+#include <cmath>
+
 namespace run::gameplay::anticheat
 {
 
@@ -16,12 +18,20 @@ AnticheatStatus GpsAntiCheat::ValidatePoint(const TelemetryPoint& point, int64_t
         return AnticheatStatus::MockDetected;
     }
 
+    if (!std::isfinite(point.coord.latitude) || !std::isfinite(point.coord.longitude) ||
+        !std::isfinite(point.accuracy_meters))
+    {
+        return AnticheatStatus::GpsAccuracyLow;
+    }
+
     if (point.accuracy_meters > m_config.max_gps_accuracy_meters)
     {
         return AnticheatStatus::GpsAccuracyLow;
     }
 
-    if (point.RecordedAtMs() > current_server_time_ms + m_config.max_allowed_future_time_ms)
+    const int64_t recorded_ms = point.RecordedAtMs();
+    if (recorded_ms > current_server_time_ms + m_config.max_allowed_future_time_ms ||
+        recorded_ms < current_server_time_ms - m_config.max_allowed_past_time_ms)
     {
         return AnticheatStatus::InvalidTimestamps;
     }

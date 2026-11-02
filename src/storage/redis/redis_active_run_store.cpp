@@ -129,6 +129,12 @@ RedisActiveRunStore::GetActiveRunAsync(const std::string& session_id)
             rec.total_points_count = std::stoi(fields.at("points_count"));
         if (fields.contains("last_sequence_number"))
             rec.last_sequence_number = std::stoll(fields.at("last_sequence_number"));
+        if (fields.contains("last_lat"))
+            rec.last_lat = std::stod(fields.at("last_lat"));
+        if (fields.contains("last_lon"))
+            rec.last_lon = std::stod(fields.at("last_lon"));
+        if (fields.contains("last_point_ts_ms"))
+            rec.last_point_ts_ms = std::stoll(fields.at("last_point_ts_ms"));
     }
     catch (const std::exception& ex)
     {
@@ -166,9 +172,22 @@ RedisActiveRunStore::ClaimBatchAsync(const std::string& session_id, const std::s
         co_return false;
     }
 
+    // 1h TTL: client retries live for minutes; 24h used to accumulate
+    // ~30k garbage keys/hour at 1000 concurrent runners (§3.4).
     const std::string dedup_key = fmt::format("run:batch:{}:{}", session_id, batch_uuid);
-    auto res = co_await m_redis->SetNxAsync(dedup_key, "1", std::chrono::hours(24));
+    auto res = co_await m_redis->SetNxAsync(dedup_key, "1", std::chrono::hours(1));
     co_return res.has_value() && *res;
+}
+
+boost::asio::awaitable<void>
+RedisActiveRunStore::ReleaseClaimBatchAsync(const std::string& session_id, const std::string& batch_uuid)
+{
+    if (!m_redis || session_id.empty() || batch_uuid.empty())
+    {
+        co_return;
+    }
+
+    co_await m_redis->DeleteAsync(fmt::format("run:batch:{}:{}", session_id, batch_uuid));
 }
 
 boost::asio::awaitable<bool>
@@ -250,6 +269,32 @@ RedisActiveRunStore::GetTrackAsync(const std::string& session_id)
     }
 
     co_return track;
+}
+
+boost::asio::awaitable<bool>
+RedisActiveRunStore::TryClaimClosingAsync(const std::string& session_id)
+{
+    if (!m_redis || session_id.empty())
+    {
+        co_return false;
+    }
+
+    // Short TTL: a node dying mid-close must not block retries forever, but
+    // it has to comfortably outlive the close pipeline (PG transaction +
+    // capture fan-out, normally well under a second).
+    auto claimed = co_await m_redis->SetNxAsync(fmt::format("run:closing:{}", session_id), "closing",
+                                                std::chrono::seconds(300));
+    co_return claimed.has_value() && *claimed;
+}
+
+boost::asio::awaitable<void>
+RedisActiveRunStore::ReleaseClosingAsync(const std::string& session_id)
+{
+    if (m_redis && !session_id.empty())
+    {
+        co_await m_redis->DeleteAsync(fmt::format("run:closing:{}", session_id));
+    }
+    co_return;
 }
 
 boost::asio::awaitable<bool>
@@ -465,12 +510,19 @@ RedisActiveRunStore::PutUploadChunkAsync(const std::string& session_id, int32_t 
                                          pt.speed_ms.value_or(0.0f), pt.RecordedAtMs()));
     }
 
+    // RPUSH + SADD share one pipelined request (SADD always runs: a re-sent
+    // chunk must re-register its index); only the SCARD reply is fetched
+    // separately — the set size is the response contract.
+    boost::redis::request commands;
     if (!raw_points.empty())
     {
-        co_await m_redis->RPushRangeAsync(chunk_key, raw_points, std::chrono::hours(24));
+        commands.push_range("RPUSH", chunk_key, raw_points.begin(), raw_points.end());
+        commands.push("EXPIRE", chunk_key, std::to_string(std::chrono::hours(24).count()));
     }
+    commands.push("SADD", chunks_set_key, std::to_string(chunk_index));
+    commands.push("EXPIRE", chunks_set_key, std::to_string(std::chrono::hours(24).count()));
+    co_await m_redis->ExecBatchAsync(chunks_set_key, commands);
 
-    co_await m_redis->SAddAsync(chunks_set_key, std::to_string(chunk_index), std::chrono::hours(24));
     auto count = co_await m_redis->SCardAsync(chunks_set_key);
     co_return static_cast<int32_t>(count);
 }
@@ -538,8 +590,9 @@ RedisActiveRunStore::AssembleUploadTrackAsync(const std::string& session_id)
                     std::chrono::milliseconds(std::stoll(raw.substr(speed_end + 1))));
                 track.push_back(std::move(p));
             }
-            catch (...)
+            catch (const std::exception& ex)
             {
+                LOG_WARN("AssembleUploadTrackAsync: skipping malformed point '{}' ({})", raw, ex.what());
             }
         }
     }
@@ -555,16 +608,27 @@ RedisActiveRunStore::DropRunDataAsync(const std::string& session_id, int64_t use
         co_return;
     }
 
+    // Everything except the user slot lives under run:*:{session_id} keys on
+    // the same shard: one multi-key DEL request instead of 4+N round trips.
     auto chunks = co_await GetAcceptedChunksAsync(session_id);
+    std::vector<std::string> keys;
+    keys.reserve(chunks.size() + 6);
     for (int32_t chunk_idx : chunks)
     {
-        co_await m_redis->DeleteAsync(fmt::format("run:upload:{}:chunk:{}", session_id, chunk_idx));
+        keys.push_back(fmt::format("run:upload:{}:chunk:{}", session_id, chunk_idx));
     }
-    co_await m_redis->DeleteAsync(fmt::format("run:upload:{}:chunks", session_id));
-    co_await m_redis->DeleteAsync(fmt::format("run:upload:{}:meta", session_id));
-    co_await m_redis->DeleteAsync(fmt::format("run:track:{}", session_id));
-    co_await m_redis->DeleteAsync(fmt::format("run:active:{}", session_id));
-    co_await m_redis->DeleteAsync(fmt::format("run:summary:{}", session_id));
+    keys.push_back(fmt::format("run:upload:{}:chunks", session_id));
+    keys.push_back(fmt::format("run:upload:{}:meta", session_id));
+    keys.push_back(fmt::format("run:track:{}", session_id));
+    keys.push_back(fmt::format("run:active:{}", session_id));
+    // run:summary:{session_id} deliberately survives: it is the idempotency
+    // marker for finish/commit retries after a lost ack.
+    keys.push_back(fmt::format("run:closing:{}", session_id));
+
+    boost::redis::request commands;
+    commands.push_range("DEL", keys.begin(), keys.end());
+    co_await m_redis->ExecBatchAsync(session_id, commands);
+
     co_await ReleaseUserSlotAsync(user_id, session_id);
 }
 

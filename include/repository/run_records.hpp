@@ -59,6 +59,13 @@ struct ActiveRunRecord
     double total_distance_meters{0.0};
     int32_t total_points_count{0};
     int64_t last_sequence_number{0};
+
+    // Last accepted point — the seam anchor for inter-batch anticheat checks
+    // (a jump from this point to the next batch's first point must be
+    // plausible). last_point_ts_ms == 0 means "no anchor yet" (fresh run).
+    double last_lat{0.0};
+    double last_lon{0.0};
+    int64_t last_point_ts_ms{0};
 };
 
 // Immutable result of a closed run, kept in Redis for idempotent

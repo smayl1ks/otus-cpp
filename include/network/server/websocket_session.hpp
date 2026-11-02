@@ -6,6 +6,7 @@
 
 #include "common.hpp"
 #include "logger/logger.hpp"
+#include "utils/time.hpp"
 
 #include "network/server/session_manager.hpp"
 #include "network/server/user_session.hpp"
@@ -23,12 +24,15 @@ template <typename Stream>
 class WebSocketSession : public session::UserSession, public std::enable_shared_from_this<WebSocketSession<Stream>>
 {
 private:
-    // Thread-safe channel: Send() may be called from any executor without a spawn.
+    // Thread-safe channel: Send() may be called from any executor without a spawn
     using WriteChannel = net::experimental::concurrent_channel<void(sys::error_code, std::string)>;
 
     static constexpr std::size_t kMaxFrameBytes = 256 * 1024; // largest legal Envelope ~60 KB
     static constexpr std::size_t kWriteQueueLimit = 128;
     static constexpr int kMaxMalformedFrames = 10; // garbage flood -> disconnect
+
+    static constexpr int kMaxConsecutiveOverflows = 200;
+    static constexpr int64_t kOverflowWarnIntervalMs = 5000;
 
     websocket::stream<Stream> m_ws;
     beast::flat_buffer m_buffer;
@@ -42,6 +46,11 @@ private:
     uint64_t m_active_run_id{0};
     std::unordered_set<uint64_t> m_subscribed_zones;
     std::atomic<bool> m_closed{false};
+    std::atomic<uint16_t> m_close_code{1000}; // set by RequestClose before the sentinel
+    // Send() runs on arbitrary threads: both counters are atomic. Reset to 0
+    // on every successful enqueue, incremented on every overflow.
+    std::atomic<int> m_consecutive_overflows{0};
+    std::atomic<int64_t> m_last_overflow_warn_ms{0};
 
 private:
     net::awaitable<void> ReadLoop()
@@ -79,7 +88,6 @@ private:
             LOG_DEBUG("WebSocket read loop finished for user {}: {}", m_user_id, ex.what());
         }
 
-        // Reader is gone: no more writes make sense.
         m_write_channel.close();
     }
 
@@ -95,11 +103,9 @@ private:
 
             if (msg.empty())
             {
-                // Close sentinel from RequestClose(): everything queued before
-                // it has been written, so the close handshake is race-free.
+                const auto code = static_cast<websocket::close_code>(m_close_code.load(std::memory_order_relaxed));
                 sys::error_code close_ec;
-                co_await m_ws.async_close(websocket::close_code::going_away,
-                                          net::redirect_error(net::use_awaitable, close_ec));
+                co_await m_ws.async_close(code, net::redirect_error(net::use_awaitable, close_ec));
                 break;
             }
 
@@ -109,7 +115,6 @@ private:
             if (write_ec)
             {
                 LOG_DEBUG("Write error for user {}: {}", m_user_id, write_ec.message());
-                // Without this the read loop would wait forever on a dead socket.
                 Close();
                 break;
             }
@@ -133,10 +138,9 @@ public:
         }
     }
 
-    /// Graceful: queued payloads are flushed first, then 1001 Going Away.
-    /// Empty string is the close sentinel (legal envelopes are never empty).
-    void RequestClose() override
+    void RequestClose(int close_code = 1000) override
     {
+        m_close_code.store(static_cast<uint16_t>(close_code), std::memory_order_relaxed);
         bool expected = false;
         if (!m_closed.compare_exchange_strong(expected, true))
         {
@@ -148,7 +152,6 @@ public:
         }
     }
 
-    /// Hard cut: socket dies immediately, both loops exit with errors.
     void Close() override
     {
         m_closed = true;
@@ -165,11 +168,10 @@ public:
         beast::get_lowest_layer(m_ws).expires_never();
 
         m_ws.binary(true);
-        // Idle timeout also reaps connections whose peer vanished without
-        // FIN/RST; pings keep alive long-idle but healthy clients (NAT).
+
         websocket::stream_base::timeout opt{
             std::chrono::seconds(30), // handshake timeout
-            std::chrono::minutes(5),  // idle timeout: no read/write activity for 5 min -> close
+            std::chrono::seconds(45), // idle timeout
             true                      // keep-alive pings during idle periods
         };
         m_ws.set_option(opt);
@@ -195,6 +197,12 @@ public:
         net::co_spawn(executor, [self]() { return self->WriteLoop(); }, net::detached);
 
         co_await ReadLoop();
+
+        if (m_session_manager)
+        {
+            m_session_manager->RemoveSession(m_user_id, this);
+        }
+        Close();
     }
 
     net::any_io_executor GetExecutor() override
@@ -215,8 +223,23 @@ public:
         }
         if (!m_write_channel.try_send(sys::error_code{}, std::move(message)))
         {
-            LOG_WARN("Write channel overflow for user {}, dropping packet", m_user_id);
+            const int streak = ++m_consecutive_overflows;
+            const int64_t now_ms = utils::NowMs();
+            if (streak == 1 ||
+                now_ms - m_last_overflow_warn_ms.load(std::memory_order_relaxed) >= kOverflowWarnIntervalMs)
+            {
+                m_last_overflow_warn_ms.store(now_ms, std::memory_order_relaxed);
+                LOG_WARN("Write channel overflow for user {}, dropping packets (streak {})", m_user_id, streak);
+            }
+            if (streak >= kMaxConsecutiveOverflows)
+            {
+                LOG_WARN("User {} overflowed the write queue {} times in a row, closing slow session", m_user_id,
+                         streak);
+                RequestClose();
+            }
+            return;
         }
+        m_consecutive_overflows.store(0, std::memory_order_relaxed);
     }
 
     void SendProtobuf(const run::proto::Envelope& envelope) override

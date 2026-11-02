@@ -12,20 +12,15 @@
 namespace run::service::running
 {
 
+namespace net = boost::asio;
+
 // Transport for live pings (Redis pub/sub in production, sharded by h3 zone
 // inside the implementation).
 struct IPubSubPublisher
 {
     virtual ~IPubSubPublisher() = default;
 
-    virtual boost::asio::awaitable<bool> PublishAsync(const std::string& channel, const std::string& payload) = 0;
-};
-
-/// Stands in for ShardedRedisManager::PublishAsync while the storage layer is stubbed.
-class NullPubSubPublisher final : public IPubSubPublisher
-{
-public:
-    boost::asio::awaitable<bool> PublishAsync(const std::string& channel, const std::string& payload) override;
+    virtual net::awaitable<bool> PublishAsync(const std::string& channel, const std::string& payload) = 0;
 };
 
 /// Live runner visibility: publishes at most one RadarPing per ingested batch,
@@ -41,13 +36,14 @@ struct RadarPublisherConfig
 class RadarPublisher
 {
 public:
-    RadarPublisher(std::shared_ptr<IPubSubPublisher> transport, std::shared_ptr<gameplay::territory_conquest::H3Service> h3_service,
+    RadarPublisher(std::shared_ptr<IPubSubPublisher> transport,
+                   std::shared_ptr<gameplay::territory_conquest::H3Service> h3_service,
                    RadarPublisherConfig config = {});
 
     /// Best-effort: failures are logged, never propagated to the ingest path.
-    boost::asio::awaitable<void> PublishIfNeededAsync(int64_t user_id, const repository::ActiveRunRecord& run,
-                                                      std::span<const gameplay::anticheat::TelemetryPoint> batch_points,
-                                                      int64_t now_ms) const;
+    net::awaitable<void> PublishIfNeededAsync(int64_t user_id, const repository::ActiveRunRecord& run,
+                                              std::span<const gameplay::anticheat::TelemetryPoint> batch_points,
+                                              int64_t now_ms) const;
 
 private:
     std::shared_ptr<IPubSubPublisher> m_transport;

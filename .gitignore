@@ -1,3 +1,8 @@
 build
 .env
 vcpkg_installed
+logs
+.runs_lease
+scripts/.venv/
+scripts/__pycache__/
+**/__pycache__/

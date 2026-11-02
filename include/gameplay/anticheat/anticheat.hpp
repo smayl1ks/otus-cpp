@@ -96,7 +96,8 @@ struct GpsAntiCheatConfig
     double max_running_speed_kmh{35.0};       ///< Max running speed (35 km/h)
     double max_teleport_distance_m{100.0};    ///< Max instant jump distance in meters
     int64_t max_allowed_future_time_ms{5000}; ///< Max allowed clock skew from future (5s)
-    std::size_t max_points_per_batch{100};    ///< Max points processed in single batch
+    int64_t max_allowed_past_time_ms{24 * 3600 * 1000};
+    std::size_t max_points_per_batch{100}; ///< Max points processed in single batch
 };
 
 /**

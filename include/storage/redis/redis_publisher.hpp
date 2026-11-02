@@ -22,7 +22,7 @@ namespace net = boost::asio;
  * @class RedisPublisher
  * @brief Dedicated publish-only connection to the standalone Pub/Sub instance.
  *
- * Radar traffic (kazan:zone:* PUBLISH fan-out) is routed to a dedicated Redis
+ * Radar traffic (city:zone:* PUBLISH fan-out) is routed to a dedicated Redis
  * instance so it never competes with hot-path telemetry writes on the sharded
  * masters. Pub/Sub is fire-and-forget, so this class deliberately has no
  * circuit breaker or deferred buffer: if the instance is unreachable, pings
@@ -51,6 +51,15 @@ public:
 
 private:
     net::awaitable<void> RunLoopAsync();
+
+    /// Backpressure watchdog: when the pending-publish valve stays saturated
+    /// for WatchdogForceReconnectAfter, the connection's writer is wedged
+    /// (upstream lost-wakeup stall, see docs/CODE_REVIEW_2026-10-31.md
+    /// §19.2.1) and boost-redis's own health check cannot see it — its ping
+    /// queues behind the dead writer. Forces a reconnect by cancelling the
+    /// connection on its own strand (cross-thread cancel = the #428 race).
+    net::awaitable<void> WatchdogAsync();
+
     std::shared_ptr<boost::redis::connection> GetConnection() const;
 
 private:
@@ -59,6 +68,13 @@ private:
 
     std::atomic<bool> m_is_running{false};
     std::atomic<bool> m_is_connected{false};
+
+    // Backpressure valve for fire-and-forget publishes (radar/capture fan-out
+    // spawn us detached): while the pub/sub connection is wedged, each publish
+    // parks a coroutine on the connection. Past this cap, new publishes are
+    // DROPPED (lossy by design) instead of accumulating coroutine frames
+    static constexpr std::size_t kMaxPendingPublishes = 256;
+    std::atomic<std::size_t> m_pending_publishes{0};
 
     mutable std::mutex m_mutex;
     std::shared_ptr<boost::redis::connection> m_connection;

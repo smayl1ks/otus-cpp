@@ -47,8 +47,8 @@ public:
  */
 struct H3CaptureConfig
 {
-    std::size_t min_points_per_hex{2};
-    double min_distance_per_hex_meters{0.0};
+    std::size_t min_points_per_hex{3};
+    double min_distance_per_hex_meters{75.0};
     bool enable_loop_capture{true};
     double min_loop_perimeter_meters{300.0};
     double min_loop_area_m2{10000.0};

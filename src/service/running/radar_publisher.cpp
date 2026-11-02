@@ -4,16 +4,12 @@
 
 #include "gamemap.pb.h"
 
+#include <boost/asio.hpp>
+
 #include <fmt/format.h>
 
 namespace run::service::running
 {
-
-boost::asio::awaitable<bool> NullPubSubPublisher::PublishAsync(const std::string& channel, const std::string& payload)
-{
-    LOG_DEBUG("[radar] stub transport, suppressed publish to '{}' ({} bytes)", channel, payload.size());
-    co_return true;
-}
 
 RadarPublisher::RadarPublisher(std::shared_ptr<IPubSubPublisher> transport,
                                std::shared_ptr<gameplay::territory_conquest::H3Service> h3_service,
@@ -22,7 +18,7 @@ RadarPublisher::RadarPublisher(std::shared_ptr<IPubSubPublisher> transport,
 {
 }
 
-boost::asio::awaitable<void>
+net::awaitable<void>
 RadarPublisher::PublishIfNeededAsync(int64_t user_id, const repository::ActiveRunRecord& run,
                                      std::span<const gameplay::anticheat::TelemetryPoint> batch_points,
                                      int64_t now_ms) const
@@ -32,8 +28,6 @@ RadarPublisher::PublishIfNeededAsync(int64_t user_id, const repository::ActiveRu
         co_return;
     }
 
-    // Freshness gate doubles as the offline-replay filter: batches replayed
-    // after a reconnect carry old timestamps and are never pinged.
     const auto& latest = batch_points.back();
     const int64_t latency_ms = now_ms - latest.RecordedAtMs();
     if (latency_ms > m_config.freshness_window_ms)
@@ -61,11 +55,29 @@ RadarPublisher::PublishIfNeededAsync(int64_t user_id, const repository::ActiveRu
             ? fmt::format("{}:zone:{:x}:radar:public", m_config.city_prefix, *hex)
             : fmt::format("{}:zone:{:x}:radar:team:{}", m_config.city_prefix, *hex, run.team_id);
 
-    const bool published = co_await m_transport->PublishAsync(channel, ping.SerializeAsString());
-    if (!published)
-    {
-        LOG_WARN("[radar] publish failed, channel '{}'", channel);
-    }
+    // Fire-and-forget, detached from the ack path. Radar publish is the only
+    // unbounded await in the batch pipeline (RedisPublisher::PublishAsync has
+    // no per-command timeout by design): a wedged pub/sub connection would
+    // park this coroutine forever, and with it the session's ReadLoop —
+    // no ack, no timeout, no RemoveSession (disembodied sessions, 2026-11-01:
+    // 114 sessions for 25 users). Radar is lossy by design: spawn with
+    // copied data and return to the caller immediately.
+    auto transport = m_transport;
+    net::co_spawn(
+        co_await net::this_coro::executor,
+        [transport, channel = std::move(channel), ping = std::move(ping)]() mutable -> net::awaitable<void>
+        {
+            std::string payload;
+            if (!ping.SerializeToString(&payload))
+            {
+                co_return;
+            }
+            if (!(co_await transport->PublishAsync(channel, payload)))
+            {
+                LOG_WARN("[radar] publish failed, channel '{}'", channel);
+            }
+        },
+        net::detached);
 }
 
 } // namespace run::service::running

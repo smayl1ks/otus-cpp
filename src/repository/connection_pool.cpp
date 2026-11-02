@@ -35,7 +35,6 @@ void ConnectionPool::Init(const std::string& connection_str, size_t pool_size)
     }
 
     m_initialized = true;
-    LOG_INFO("PostgreSQL Connection Pool initialized with {} connections", pool_size);
 }
 
 ConnectionPool::ConnectionPtr ConnectionPool::GetConnection()

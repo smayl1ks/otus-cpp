@@ -23,7 +23,7 @@ void Context::InitSignals()
             LOG_INFO("Signal received: ({}). Initiating graceful shutdown ...", signal_number);
             if (m_shutdown_hook)
             {
-                // Server hook: flush sessions (1001 Going Away), then Stop().
+                // Server hook: flush sessions (1001 Going Away), then Stop()
                 m_shutdown_hook();
             }
             else

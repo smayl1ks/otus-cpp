@@ -10,8 +10,6 @@
 namespace run::controller
 {
 
-/// REST plane: auth + read endpoints. Writes (run lifecycle, telemetry) live
-/// on the WebSocket contract (proto/envelope.proto), not here.
 class HttpController
 {
 private:

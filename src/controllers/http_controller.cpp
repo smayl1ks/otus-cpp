@@ -59,8 +59,7 @@ std::optional<uint64_t> ParseUint64(std::string_view segment)
 
 } // namespace
 
-net::awaitable<http::response<http::string_body>>
-HttpController::HandleLogin(http::request<http::string_body> request)
+net::awaitable<http::response<http::string_body>> HttpController::HandleLogin(http::request<http::string_body> request)
 {
     nlohmann::json body_json;
     try
@@ -72,16 +71,16 @@ HttpController::HandleLogin(http::request<http::string_body> request)
         co_return MakeError(http::status::bad_request, "Invalid request body", request.version());
     }
 
-    const auto auth = co_await m_auth_service->Authenticate(body_json.value("login", ""),
-                                                            body_json.value("password", ""));
+    const auto auth =
+        co_await m_auth_service->Authenticate(body_json.value("login", ""), body_json.value("password", ""));
     if (!auth.has_value())
     {
         co_return MakeError(http::status::unauthorized, "Invalid credentials", request.version());
     }
 
-    co_return MakeSuccess(request, {{"access_token", auth->access_token},
-                                    {"ws_ticket", auth->ws_ticket},
-                                    {"expires_in", auth->expires_in}});
+    co_return MakeSuccess(
+        request,
+        {{"access_token", auth->access_token}, {"ws_ticket", auth->ws_ticket}, {"expires_in", auth->expires_in}});
 }
 
 net::awaitable<http::response<http::string_body>>
@@ -113,8 +112,7 @@ HttpController::HandleWsTicket(http::request<http::string_body> request)
     co_return MakeSuccess(request, {{"ws_ticket", *ticket}});
 }
 
-net::awaitable<http::response<http::string_body>> HttpController::HandleProfile(uint64_t user_id,
-                                                                                unsigned version)
+net::awaitable<http::response<http::string_body>> HttpController::HandleProfile(uint64_t user_id, unsigned version)
 {
     const auto user = co_await m_user_repository->FindById(user_id);
     if (!user.has_value())
@@ -157,7 +155,11 @@ HttpController::HandleRequest(http::request<http::string_body> request)
     // --- Public auth endpoints -------------------------------------------
     if (request.method() == http::verb::post && path == "/api/v1/auth/login")
     {
-        co_return co_await HandleLogin(std::move(request));
+        const auto response = co_await HandleLogin(std::move(request));
+
+        monitoring::MetricsCollector::Instance().IncrementHttpRequests("POST", "/api/v1/auth/login",
+                                                                       static_cast<int>(response.result_int()));
+        co_return response;
     }
     if (request.method() == http::verb::post && path == "/api/v1/auth/ws-ticket")
     {

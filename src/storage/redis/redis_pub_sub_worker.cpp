@@ -1,12 +1,14 @@
 
 #include "storage/redis/redis_pub_sub_worker.hpp"
 #include "logger/logger.hpp"
+#include "storage/redis/redis_exec_serialized.hpp"
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/consign.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 
 namespace run::storage::redis
@@ -142,7 +144,7 @@ net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync(std::string host,
             continue;
         }
 
-        auto conn = std::make_shared<boost::redis::connection>(m_executor);
+        auto conn = std::make_shared<boost::redis::connection>(net::make_strand(m_executor));
         {
             std::lock_guard lock(m_mutex);
             m_connections.push_back(conn);
@@ -161,75 +163,75 @@ net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync(std::string host,
 
         conn->async_run(cfg, net::consign(net::detached, conn));
 
-        boost::redis::request req;
-        req.push("PSUBSCRIBE", pattern);
+        // The subscribe and the whole receive loop must run on the
+        // connection's own executor: the reader task feeds the receive
+        // channel from there, and Boost.Redis 1.90's channel/multiplexer are
+        // not safe to touch from other executors.
+        auto session = [this, conn, host, port, pattern]() -> net::awaitable<bool> {
+            boost::redis::request req;
+            req.push("PSUBSCRIBE", pattern);
 
-        boost::redis::generic_response sub_resp;
-        boost::system::error_code ec;
+            boost::redis::generic_response sub_resp;
+            boost::system::error_code ec;
 
-        co_await conn->async_exec(req, sub_resp, net::redirect_error(net::use_awaitable, ec));
+            co_await conn->async_exec(req, sub_resp, net::redirect_error(net::use_awaitable, ec));
 
-        if (ec)
-        {
-            LOG_WARN("RedisPubSubWorker failed to subscribe to pattern '{}' on {}:{}: {}", pattern, host, port,
-                     ec.message());
-            conn->cancel();
-
+            if (ec)
             {
-                std::lock_guard lock(m_mutex);
-                std::erase(m_connections, conn);
+                LOG_WARN("RedisPubSubWorker failed to subscribe to pattern '{}' on {}:{}: {}", pattern, host, port,
+                         ec.message());
+                co_return false;
             }
 
-            net::steady_timer timer(co_await net::this_coro::executor);
-            timer.expires_after(std::chrono::seconds(2));
-            co_await timer.async_wait(net::use_awaitable);
-            continue;
-        }
+            LOG_INFO("RedisPubSubWorker successfully subscribed to pattern '{}' on {}:{}", pattern, host, port);
 
-        LOG_INFO("RedisPubSubWorker successfully subscribed to pattern '{}' on {}:{}", pattern, host, port);
+            boost::redis::generic_response push_resp;
+            conn->set_receive_response(push_resp);
 
-        boost::redis::generic_response push_resp;
-        conn->set_receive_response(push_resp);
-
-        while (m_is_running)
-        {
-            push_resp.value().clear();
-
-            auto [rec_ec, n] = co_await conn->async_receive(net::as_tuple(net::use_awaitable));
-            if (rec_ec)
+            while (m_is_running)
             {
-                LOG_WARN("RedisPubSubWorker receive error on {}:{}: {}", host, port, rec_ec.message());
-                break;
-            }
+                push_resp.value().clear();
 
-            if (!push_resp.has_value())
-            {
-                continue;
-            }
-
-            const auto& nodes = push_resp.value();
-            for (size_t i = 0; i < nodes.size(); ++i)
-            {
-                // pmessage format: [pmessage, pattern, channel, payload]
-                if (nodes[i].value == "pmessage" && i + 3 < nodes.size())
+                auto [rec_ec, n] = co_await conn->async_receive(net::as_tuple(net::use_awaitable));
+                if (rec_ec)
                 {
-                    const std::string_view channel = nodes[i + 2].value;
-                    const std::string_view payload = nodes[i + 3].value;
-
-                    MessageCallback cb;
-                    {
-                        std::lock_guard lock(m_mutex);
-                        cb = m_callback;
-                    }
-
-                    if (cb)
-                    {
-                        cb(channel, payload);
-                    }
+                    LOG_WARN("RedisPubSubWorker receive error on {}:{}: {}", host, port, rec_ec.message());
                     break;
                 }
+
+                if (!push_resp.has_value())
+                {
+                    continue;
+                }
+
+                const auto& nodes = push_resp.value();
+                for (size_t i = 0; i < nodes.size(); ++i)
+                {
+                    // pmessage format: [pmessage, pattern, channel, payload]
+                    if (nodes[i].value == "pmessage" && i + 3 < nodes.size())
+                    {
+                        const std::string_view channel = nodes[i + 2].value;
+                        const std::string_view payload = nodes[i + 3].value;
+
+                        MessageCallback cb;
+                        {
+                            std::lock_guard lock(m_mutex);
+                            cb = m_callback;
+                        }
+
+                        if (cb)
+                        {
+                            cb(channel, payload);
+                        }
+                        break;
+                    }
+                }
             }
-        }
+
+            co_return true;
+        };
+
+        const bool subscribed = co_await net::co_spawn(conn->get_executor(), std::move(session), net::use_awaitable);
 
         conn->cancel();
 
@@ -240,8 +242,9 @@ net::awaitable<void> RedisPubSubWorker::RunSubscriberLoopAsync(std::string host,
 
         if (m_is_running)
         {
+            const auto backoff = subscribed ? std::chrono::seconds(1) : std::chrono::seconds(2);
             net::steady_timer timer(co_await net::this_coro::executor);
-            timer.expires_after(std::chrono::seconds(1));
+            timer.expires_after(backoff);
             co_await timer.async_wait(net::use_awaitable);
         }
 

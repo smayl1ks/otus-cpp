@@ -2,14 +2,14 @@
 
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 #include "common.hpp"
+#include "config/config.hpp"
 #include "context/work_context.hpp"
 #include "repository/iredis_repository.hpp"
 #include "repository/iuser_repository.hpp"
-
-#include "config/config.hpp"
 
 namespace run::service
 {
@@ -34,6 +34,14 @@ public:
         : m_user_repository(std::move(user_repository)), m_redis_repository(std::move(redis_repository)),
           m_work_context(work_context)
     {
+        // HS256 with an empty key signs/verifies "validly" for everyone —
+        // refuse to start instead (audit S9). The secret comes from
+        // JWT_ACCESS_SECRET / runner.cfg; a missing one is a deployment bug.
+        if (config::ServerConfig::Get().GetJwtSecret().empty())
+        {
+            throw std::runtime_error("auth.jwt-secret is empty: set JWT_ACCESS_SECRET (or runner.cfg) "
+                                     "before starting the node");
+        }
     }
 
     net::awaitable<std::optional<AuthResult>> Authenticate(std::string username, std::string password);

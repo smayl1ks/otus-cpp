@@ -23,12 +23,16 @@ public:
 
     // ---- Telemetry ingestion ----------------------------------------------
     boost::asio::awaitable<bool> ClaimBatchAsync(const std::string& session_id, const std::string& batch_uuid) override;
+    boost::asio::awaitable<void> ReleaseClaimBatchAsync(const std::string& session_id,
+                                                        const std::string& batch_uuid) override;
     boost::asio::awaitable<bool> AppendTrackBatchAsync(const std::string& session_id,
                                                        std::span<const gameplay::workout_tracking::RunPoint> points,
                                                        double delta_meters, int64_t sequence_number) override;
     boost::asio::awaitable<std::vector<gameplay::workout_tracking::RunPoint>> GetTrackAsync(const std::string& session_id) override;
 
     // ---- Idempotent close --------------------------------------------------
+    boost::asio::awaitable<bool> TryClaimClosingAsync(const std::string& session_id) override;
+    boost::asio::awaitable<void> ReleaseClosingAsync(const std::string& session_id) override;
     boost::asio::awaitable<bool> SaveRunSummaryAsync(const repository::StoredRunSummary& summary) override;
     boost::asio::awaitable<std::optional<repository::StoredRunSummary>> GetRunSummaryAsync(const std::string& session_id) override;
 

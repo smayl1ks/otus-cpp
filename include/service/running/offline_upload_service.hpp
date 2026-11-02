@@ -12,6 +12,8 @@
 namespace run::service::running
 {
 
+namespace net = boost::asio;
+
 // Offline upload flow: a run that finished entirely without connectivity is
 // uploaded in three phases over the same WS.
 //
@@ -33,20 +35,19 @@ public:
                          std::shared_ptr<repository::IRunHistoryRepository> history_repository,
                          std::shared_ptr<RunFinalizer> run_finalizer, UploadLimits limits = {});
 
-    boost::asio::awaitable<run::proto::session::OfflineRunInitResponse>
+    net::awaitable<run::proto::session::OfflineRunInitResponse>
     InitAsync(int64_t user_id, const run::proto::session::OfflineRunInitRequest& request);
 
-    boost::asio::awaitable<run::proto::session::OfflineRunChunkResponse>
+    net::awaitable<run::proto::session::OfflineRunChunkResponse>
     ChunkAsync(int64_t user_id, const run::proto::session::OfflineRunChunkRequest& request);
 
-    boost::asio::awaitable<run::proto::session::OfflineRunCommitResponse>
+    net::awaitable<run::proto::session::OfflineRunCommitResponse>
     CommitAsync(int64_t user_id, const run::proto::session::OfflineRunCommitRequest& request);
 
 private:
-    static int64_t NowMs() noexcept;
 
-    std::shared_ptr<repository::IActiveRunStore> m_store;
-    std::shared_ptr<repository::IRunHistoryRepository> m_history;
+    std::shared_ptr<repository::IActiveRunStore> m_run_store;
+    std::shared_ptr<repository::IRunHistoryRepository> m_run_history;
     std::shared_ptr<RunFinalizer> m_finalizer;
     gameplay::anticheat::GpsAntiCheat m_anticheat; // advisory per-chunk preview only
     UploadLimits m_limits;

@@ -12,7 +12,7 @@ namespace run::repository
 {
 
 // Key-value plane for short-lived credentials (WS tickets) and hot caches.
-// Production impl: Redis; test/dev impl: in-memory (in_memory_auth_stores.hpp).
+// Production impl: RedisRepository (storage/redis/redis_repository.hpp).
 class IRedisRepository
 {
 public:

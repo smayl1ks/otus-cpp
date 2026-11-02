@@ -1,11 +1,17 @@
 #include "service/running/run_finalizer.hpp"
-#include "monitoring/metrics_collector.hpp"
-#include <chrono>
 
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/this_coro.hpp>
+
+#include "gameplay/telemetry_conversion.hpp"
 #include "logger/logger.hpp"
+#include "monitoring/metrics_collector.hpp"
+
+#include <fmt/format.h>
 
 #include <algorithm>
 #include <chrono>
+#include <map>
 
 namespace run::service::running
 {
@@ -20,21 +26,22 @@ using gameplay::workout_tracking::RunPoint;
 // Game balance placeholder: points credited per newly captured hex.
 constexpr uint32_t kPointsPerHex{10};
 
-TelemetryPoint ToTelemetry(const RunPoint& point)
-{
-    return TelemetryPoint::Create(point.coord.latitude, point.coord.longitude, point.RecordedAtMs(),
-                                  point.accuracy_meters, /*is_mock=*/false, point.speed_ms, point.altitude_meters,
-                                  point.heading_degrees);
-}
+// Fewer surviving points than this -> stored unscored (kInsufficientValidPoints).
+constexpr std::size_t kMinValidPoints{2};
 
 } // namespace
 
 RunFinalizer::RunFinalizer(std::shared_ptr<repository::IActiveRunStore> active_run_store,
                            std::shared_ptr<repository::IRunHistoryRepository> history_repository,
-                           gameplay::anticheat::GpsAntiCheatConfig anticheat_config,
+                           context::WorkContext* work_context, gameplay::anticheat::GpsAntiCheatConfig anticheat_config,
                            gameplay::territory_conquest::H3CaptureConfig h3_config,
-                           gameplay::workout_tracking::RunValidationConfig validation_config)
-    : m_store(std::move(active_run_store)), m_history(std::move(history_repository)), m_anticheat(anticheat_config),
+                           gameplay::workout_tracking::RunValidationConfig validation_config,
+                           std::shared_ptr<repository::IHexMapCache> hex_map_cache,
+                           std::shared_ptr<ICaptureEventPublisher> capture_publisher,
+                           std::shared_ptr<repository::IUserRepository> user_repository)
+    : m_run_store(std::move(active_run_store)), m_run_history(std::move(history_repository)),
+      m_hex_cache(std::move(hex_map_cache)), m_capture_publisher(std::move(capture_publisher)),
+      m_users(std::move(user_repository)), m_work_context(work_context), m_anticheat(anticheat_config),
       m_capture_resolver(std::make_unique<gameplay::territory_conquest::H3CaptureResolver>(m_h3_service, h3_config)),
       m_run_validator(validation_config)
 {
@@ -62,14 +69,12 @@ RunFinalizer::ClassifyVerdict(const RunMetrics& metrics, const gameplay::workout
     return repository::ValidationVerdict::kValid;
 }
 
-boost::asio::awaitable<std::optional<repository::StoredRunSummary>>
-RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::RunCloseReason close_reason,
-                            std::span<const RunPoint> track, int64_t now_ms)
+RunFinalizer::ComputedClose RunFinalizer::ComputeClose(const repository::ActiveRunRecord& run,
+                                                       repository::RunCloseReason close_reason,
+                                                       std::span<const RunPoint> track, int64_t now_ms) const
 {
-    LOG_INFO("[finalizer] closing session '{}' (user {}, reason: {}, track points: {})", run.session_id, run.user_id,
-             close_reason == repository::RunCloseReason::kFinished ? "finished" : "cancelled", track.size());
-
-    repository::StoredRunSummary summary;
+    ComputedClose result;
+    repository::StoredRunSummary& summary = result.summary;
     summary.session_id = run.session_id;
     summary.server_run_id = run.server_run_id;
     summary.user_id = run.user_id;
@@ -77,16 +82,31 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
     summary.started_at_ms = run.started_at_ms;
     summary.finished_at_ms = now_ms;
 
-    // [1] Anti-cheat replay point-by-point; a finished track may contain
-    // points whose neighboring batches were never re-validated together.
-    std::vector<RunPoint> valid_points;
+    // Anticheat replay over the whole track: batch acceptance upstream does
+    // not spare the finalizer a second look — the closed run is judged as a
+    // whole, point by point AND segment by segment (S2: the ingestor checks
+    // only the first point of a batch against the seam anchor; here every
+    // consecutive pair of surviving points is re-validated).
+    std::vector<RunPoint>& valid_points = result.valid_points;
     valid_points.reserve(track.size());
     int64_t first_ts_ms = 0;
     int64_t last_ts_ms = 0;
     for (const auto& point : track)
     {
-        if (m_anticheat.ValidatePoint(ToTelemetry(point), now_ms) != gameplay::anticheat::AnticheatStatus::Ok)
+        if (m_anticheat.ValidatePoint(gameplay::ToTelemetryPoint(point), now_ms) !=
+            gameplay::anticheat::AnticheatStatus::Ok)
         {
+            continue;
+        }
+        if (!valid_points.empty() &&
+            m_anticheat.ValidateSegment(gameplay::ToTelemetryPoint(valid_points.back()),
+                                        gameplay::ToTelemetryPoint(point)) !=
+                gameplay::anticheat::AnticheatStatus::Ok)
+        {
+            // Teleport/jump against the last accepted point: drop the
+            // arriving point and keep the anchor — no distance is credited
+            // across the gap (capture and validation run on accepted points
+            // only).
             continue;
         }
         if (valid_points.empty())
@@ -97,36 +117,33 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
         valid_points.push_back(point);
     }
 
-    if (valid_points.size() < 2)
+    gameplay::territory_conquest::CaptureResult captures;
+    if (valid_points.size() < kMinValidPoints)
     {
         summary.verdict = repository::ValidationVerdict::kInsufficientValidPoints;
         summary.is_valid = false;
     }
-
-    // [2] Territory capture, once over the whole validated track. Cancelled
-    // runs keep their track but capture nothing.
-    gameplay::territory_conquest::CaptureResult captures;
-    if (close_reason == repository::RunCloseReason::kFinished && valid_points.size() >= 2)
+    else if (close_reason == repository::RunCloseReason::kFinished)
     {
-        auto t0 = std::chrono::steady_clock::now();
+        const auto t0 = std::chrono::steady_clock::now();
         captures = m_capture_resolver->Resolve(std::span<const RunPoint>(valid_points));
-        auto t1 = std::chrono::steady_clock::now();
-        double latency_us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
-
-        summary.claimed_hexes = captures.claimed_hexes;
-        summary.hexagons_captured_count = static_cast<uint32_t>(captures.claimed_hexes.size());
-
-        monitoring::MetricsCollector::Instance().IncrementResolvedTracks();
-        monitoring::MetricsCollector::Instance().AddCapturedCells(static_cast<double>(captures.claimed_hexes.size()));
-        monitoring::MetricsCollector::Instance().ObserveLatency(latency_us);
+        result.capture_latency_us = static_cast<double>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count());
+        result.captures_resolved = true;
     }
 
-    // [3] Validation thresholds. Distance comes from the capture-resolved
+    result.captured_hexes.reserve(captures.claimed_hexes.size());
+    for (const uint64_t hex : captures.claimed_hexes)
+    {
+        result.captured_hexes.push_back(repository::HexCaptureRecord{hex, std::nullopt});
+    }
+
+    // Validation thresholds. Distance comes from the capture-resolved
     // track; duration from the point timeline (client timestamps stay
-    // untrusted: declared start/finish are only cross-checked upstream).
+    // untrusted: declared start/finish are only cross-checked upstream)
     RunMetrics metrics;
     bool thresholds_valid = true;
-    if (valid_points.size() >= 2)
+    if (valid_points.size() >= kMinValidPoints)
     {
         metrics = m_run_validator.Validate(std::span<const RunPoint>(valid_points));
         summary.total_distance_meters =
@@ -145,11 +162,14 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
     }
     if (close_reason == repository::RunCloseReason::kCancelled)
     {
-        // Cancelled runs are stored but never scored.
+        // Cancelled runs are stored but never scored
         summary.is_valid = false;
     }
 
-    // [4] Derived stats. Moving duration / pace refinement lands with the
+    summary.claimed_hexes = captures.claimed_hexes;
+    summary.hexagons_captured_count = static_cast<uint32_t>(captures.claimed_hexes.size());
+
+    // Derived stats. Moving duration / pace refinement lands with the
     // pause-aware metrics; placeholders keep the summary shape complete.
     summary.total_points_count = static_cast<int32_t>(valid_points.size());
     summary.moving_duration_seconds = summary.duration_seconds;
@@ -163,22 +183,150 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
             : 0.0f;
     summary.total_score = summary.is_valid ? summary.hexagons_captured_count * kPointsPerHex : 0;
 
-    // [5] PostgreSQL final transaction: runs row + points + captures + stats.
-    if (!(co_await m_history->FinalizeRunAsync(summary, valid_points)))
+    return result;
+}
+
+net::awaitable<std::optional<repository::StoredRunSummary>>
+RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::RunCloseReason close_reason,
+                            std::span<const RunPoint> track, int64_t now_ms)
+{
+    LOG_INFO("[finalizer] closing session '{}' (user {}, reason: {}, track points: {})", run.session_id, run.user_id,
+             close_reason == repository::RunCloseReason::kFinished ? "finished" : "cancelled", track.size());
+
+    // ---- claim: one closer per session -----------------------------------
+    if (!(co_await m_run_store->TryClaimClosingAsync(run.session_id)))
     {
-        LOG_ERROR("[finalizer] history persistence failed for session '{}', run stays open", run.session_id);
+        LOG_INFO("[finalizer] session '{}' is already being closed by someone else", run.session_id);
         co_return std::nullopt;
     }
 
-    // [6] Redis cleanup: summary for idempotent retries, then every per-run
-    // key plus the user slot.
-    co_await m_store->SaveRunSummaryAsync(summary);
-    co_await m_store->DropRunDataAsync(run.session_id, run.user_id);
+    // ---- compute: anticheat + capture + validation, off the io threads ----
+    ComputedClose computed;
+    if (m_work_context != nullptr)
+    {
+        computed = co_await m_work_context->AsyncPost([this, &run, close_reason, track, now_ms]
+                                                      { return ComputeClose(run, close_reason, track, now_ms); });
+    }
+    else
+    {
+        computed = ComputeClose(run, close_reason, track, now_ms);
+    }
+
+    if (computed.captures_resolved)
+    {
+        monitoring::MetricsCollector::Instance().IncrementResolvedTracks();
+        monitoring::MetricsCollector::Instance().AddCapturedCells(
+            static_cast<double>(computed.summary.hexagons_captured_count));
+        monitoring::MetricsCollector::Instance().ObserveLatency(computed.capture_latency_us);
+    }
+    repository::StoredRunSummary& summary = computed.summary;
+
+    // ---- persist: PostgreSQL final transaction ----------------------------
+    if (!(co_await m_run_history->FinalizeRunAsync(summary, computed.valid_points, &computed.captured_hexes)))
+    {
+        LOG_ERROR("[finalizer] history persistence failed for session '{}', run stays open", run.session_id);
+        co_await m_run_store->ReleaseClosingAsync(run.session_id);
+        co_return std::nullopt;
+    }
+
+    // ---- fan-out: map cache + capture events ------------------------------
+    if (!computed.captured_hexes.empty())
+    {
+        co_await FanOutCapturesAsync(run, summary, computed.captured_hexes, now_ms);
+    }
+
+    // ---- cleanup: summary survives for idempotent retries -----------------
+    if (!(co_await m_run_store->SaveRunSummaryAsync(summary)))
+    {
+        // The run is closed in PostgreSQL already; only the retry marker is
+        // lost. Log loudly: until the summary TTL expires, a finish retry
+        // will report SESSION_NOT_FOUND instead of the stored summary.
+        LOG_ERROR("[finalizer] failed to save summary marker for session '{}'", run.session_id);
+    }
+    co_await m_run_store->DropRunDataAsync(run.session_id, run.user_id);
 
     LOG_INFO("[finalizer] session '{}' closed: {} m, {} s, {} hexes, valid={}", run.session_id,
              summary.total_distance_meters, summary.duration_seconds, summary.hexagons_captured_count,
              summary.is_valid);
     co_return summary;
+}
+
+net::awaitable<void> RunFinalizer::FanOutCapturesAsync(const repository::ActiveRunRecord& run,
+                                                       const repository::StoredRunSummary& summary,
+                                                       const std::vector<repository::HexCaptureRecord>& captures,
+                                                       int64_t now_ms)
+{
+    // Owner identity as observed by the users repository: falls back to a
+    // synthetic name when the row is missing or the repository is absent.
+    std::string username;
+    std::string color;
+    if (m_users)
+    {
+        if (auto user = co_await m_users->FindById(run.user_id); user.has_value())
+        {
+            username = user->username;
+            color = user->player_color_hex;
+        }
+    }
+    if (username.empty())
+    {
+        username = fmt::format("runner-{}", run.user_id);
+    }
+    if (color.empty())
+    {
+        color = "#000000";
+    }
+
+    // Map cache: group by parent zone, one pipeline per zone.
+    if (m_hex_cache)
+    {
+        std::map<uint64_t, std::vector<repository::HexOwnershipRecord>> per_zone;
+        for (const auto& capture : captures)
+        {
+            if (auto parent_zone = m_h3_service.GetParent(capture.h3_index, 6); parent_zone.has_value())
+            {
+                per_zone[*parent_zone].push_back(
+                    repository::HexOwnershipRecord{capture.h3_index, static_cast<uint64_t>(run.user_id), username,
+                                                   color, static_cast<int32_t>(kPointsPerHex)});
+            }
+        }
+        for (const auto& [zone6, hexes] : per_zone)
+        {
+            if (!(co_await m_hex_cache->WriteZoneBatchAsync(hexes, zone6)))
+            {
+                LOG_WARN("[finalizer] map cache write failed for {} hexes of zone {:x}", hexes.size(), zone6);
+            }
+        }
+    }
+
+    // Capture events: one domain notice per hex; the transport builds the
+    // Envelope (the service layer stays proto-free). The persistence records
+    // carry the previous owner as observed inside the PG transaction — the
+    // source of truth for the fan-out.
+    for (const auto& capture : captures)
+    {
+        const CaptureNotice notice{.h3_index = capture.h3_index,
+                                   .new_owner_id = run.user_id,
+                                   .new_owner_name = username,
+                                   .new_owner_color_hex = color,
+                                   .prev_owner_id = capture.prev_owner_id,
+                                   .score_at_capture = static_cast<int32_t>(kPointsPerHex),
+                                   .timestamp_ms = now_ms};
+        if (m_capture_publisher)
+        {
+            // Same detached fire-and-forget as the radar: a wedged pub/sub
+            // transport must not park the finalize dispatch (the capture
+            // event is a best-effort notification, losses are logged).
+            auto publisher = m_capture_publisher;
+            net::co_spawn(
+                co_await net::this_coro::executor,
+                [publisher, notice]() -> net::awaitable<void>
+                {
+                    co_await publisher->PublishAsync(notice);
+                },
+                net::detached);
+        }
+    }
 }
 
 } // namespace run::service::running

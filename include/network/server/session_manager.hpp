@@ -48,7 +48,6 @@ public:
     void UpdateViewportSubscription(SessionPtr session, const std::vector<uint64_t>& new_h3_zones);
 
     void BroadcastToZone(uint64_t zone_h3_idx, const std::string& binary_envelope);
-    void SendToUser(uint64_t user_id, const std::string& payload);
 
     /// Graceful shutdown: flush + 1001 Going Away on every live session.
     void CloseAllSessions();

@@ -22,8 +22,8 @@ struct RedisConfig
     std::string master_name{"mymaster"};
     std::vector<SentinelNode> sentinels;
     std::string password;
-    std::chrono::milliseconds connection_timeout{100};
-    std::chrono::milliseconds command_timeout{50};
+    std::chrono::milliseconds connection_timeout{2000};
+    std::chrono::milliseconds command_timeout{2000};
     std::size_t num_shards{1};
     std::size_t pool_size{2};
     std::chrono::seconds ttl_refresh_interval{30};

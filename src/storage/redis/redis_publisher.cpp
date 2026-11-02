@@ -1,11 +1,17 @@
 #include "storage/redis/redis_publisher.hpp"
 #include "logger/logger.hpp"
+#include "storage/redis/redis_exec_serialized.hpp"
 
+#include <boost/asio/cancel_after.hpp>
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/consign.hpp>
 #include <boost/asio/detached.hpp>
-#include <boost/asio/use_awaitable.hpp>
+#include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/this_coro.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#include <optional>
 
 namespace run::storage::redis
 {
@@ -16,8 +22,7 @@ std::pair<std::string, std::string> ResolvePubSubAddress(const RedisConfig& conf
 {
     if (!config.pubsub_host.empty())
     {
-        return {config.pubsub_host,
-                config.pubsub_port.empty() ? std::string{"6379"} : config.pubsub_port};
+        return {config.pubsub_host, config.pubsub_port.empty() ? std::string{"6379"} : config.pubsub_port};
     }
     return {};
 }
@@ -65,6 +70,7 @@ void RedisPublisher::Start()
     LOG_INFO("RedisPublisher: starting dedicated pub/sub publisher for {}:{}", m_config.pubsub_host,
              m_config.pubsub_port);
     net::co_spawn(m_executor, RunLoopAsync(), net::detached);
+    net::co_spawn(m_executor, WatchdogAsync(), net::detached);
 }
 
 void RedisPublisher::Stop()
@@ -87,12 +93,22 @@ net::awaitable<bool> RedisPublisher::PublishAsync(const std::string& channel, co
         co_return false;
     }
 
+    if (m_pending_publishes.fetch_add(1, std::memory_order_acq_rel) >= kMaxPendingPublishes)
+    {
+        m_pending_publishes.fetch_sub(1, std::memory_order_acq_rel);
+        LOG_WARN("RedisPublisher: {} pending publishes on {}:{} — dropping '{}'", kMaxPendingPublishes,
+                 m_config.pubsub_host, m_config.pubsub_port, channel);
+        co_return false;
+    }
+
     boost::redis::request req;
     req.push("PUBLISH", channel, payload);
 
     boost::redis::generic_response resp;
     boost::system::error_code ec;
-    co_await conn->async_exec(req, resp, net::redirect_error(net::use_awaitable, ec));
+
+    co_await ExecSerializedAsync(conn, req, resp, ec);
+    m_pending_publishes.fetch_sub(1, std::memory_order_acq_rel);
 
     if (ec)
     {
@@ -109,11 +125,57 @@ std::shared_ptr<boost::redis::connection> RedisPublisher::GetConnection() const
     return m_connection;
 }
 
+net::awaitable<void> RedisPublisher::WatchdogAsync()
+{
+    using clock = std::chrono::steady_clock;
+    std::optional<clock::time_point> saturated_since;
+
+    while (m_is_running)
+    {
+        net::steady_timer timer(co_await net::this_coro::executor);
+        timer.expires_after(std::chrono::seconds(5));
+        co_await timer.async_wait(net::use_awaitable);
+
+        if (m_pending_publishes.load(std::memory_order_relaxed) < kMaxPendingPublishes)
+        {
+            saturated_since.reset();
+            continue;
+        }
+
+        const auto now = clock::now();
+        if (!saturated_since.has_value())
+        {
+            saturated_since = now;
+            continue;
+        }
+
+        if (now - *saturated_since < std::chrono::seconds(30))
+        {
+            continue;
+        }
+
+        if (auto conn = GetConnection())
+        {
+            LOG_WARN("RedisPublisher: {} publishes pending for 30+ s — wedged writer, forcing reconnect",
+                     m_pending_publishes.load());
+            net::co_spawn(
+                conn->get_executor(),
+                [conn]() -> net::awaitable<void>
+                {
+                    conn->cancel();
+                    co_return;
+                },
+                net::detached);
+        }
+        saturated_since.reset();
+    }
+}
+
 net::awaitable<void> RedisPublisher::RunLoopAsync()
 {
     while (m_is_running)
     {
-        auto conn = std::make_shared<boost::redis::connection>(m_executor);
+        auto conn = std::make_shared<boost::redis::connection>(net::make_strand(m_executor));
         {
             std::lock_guard lock(m_mutex);
             m_connection = conn;

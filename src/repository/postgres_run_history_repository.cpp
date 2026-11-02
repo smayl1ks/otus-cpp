@@ -14,9 +14,14 @@ namespace run::repository
 namespace
 {
 
-constexpr const char* kValidationReasonNames[] = {
-    "NONE",           "TOO_SHORT_DISTANCE", "TOO_SHORT_DURATION", "TOO_LONG_DISTANCE", "TOO_LONG_DURATION",
-    "ANTICHEAT_REJECTED", "INSUFFICIENT_VALID_POINTS", "INVALID_TIMESTAMPS"};
+constexpr const char* kValidationReasonNames[] = {"NONE",
+                                                  "TOO_SHORT_DISTANCE",
+                                                  "TOO_SHORT_DURATION",
+                                                  "TOO_LONG_DISTANCE",
+                                                  "TOO_LONG_DURATION",
+                                                  "ANTICHEAT_REJECTED",
+                                                  "INSUFFICIENT_VALID_POINTS",
+                                                  "INVALID_TIMESTAMPS"};
 
 std::string_view ValidationReasonName(ValidationVerdict verdict)
 {
@@ -24,7 +29,7 @@ std::string_view ValidationReasonName(ValidationVerdict verdict)
     return index < std::size(kValidationReasonNames) ? kValidationReasonNames[index] : "NONE";
 }
 
-/// H3 uint64 indexes are stored in BIGINT columns: reinterpret, never truncate.
+/// H3 uint64 indexes are stored in BIGINT columns
 constexpr int64_t ToBigInt(uint64_t h3_index)
 {
     return static_cast<int64_t>(h3_index);
@@ -37,8 +42,7 @@ PostgresRunHistoryRepository::PostgresRunHistoryRepository(run::context::WorkCon
 {
 }
 
-boost::asio::awaitable<std::optional<int64_t>>
-PostgresRunHistoryRepository::CreateRunAsync(const NewRunRecord& record)
+boost::asio::awaitable<std::optional<int64_t>> PostgresRunHistoryRepository::CreateRunAsync(const NewRunRecord& record)
 {
     co_return co_await m_work_context.AsyncPost(
         [record]() -> std::optional<int64_t>
@@ -50,12 +54,11 @@ PostgresRunHistoryRepository::CreateRunAsync(const NewRunRecord& record)
 
                 // team_id/event_id stay out of the runs schema for now:
                 // they live in the active-run record (Redis plane).
-                auto result = txn.exec_params(
-                    "INSERT INTO runs (user_id, session_id, status, started_at) "
-                    "VALUES ($1, $2, 'active', to_timestamp($3 / 1000.0)) "
-                    "RETURNING id",
-                    static_cast<int64_t>(record.user_id), record.session_id,
-                    static_cast<int64_t>(record.started_at_ms));
+                auto result = txn.exec_params("INSERT INTO runs (user_id, session_id, status, started_at) "
+                                              "VALUES ($1, $2, 'active', to_timestamp($3 / 1000.0)) "
+                                              "RETURNING id",
+                                              static_cast<int64_t>(record.user_id), record.session_id,
+                                              static_cast<int64_t>(record.started_at_ms));
 
                 txn.commit();
 
@@ -75,10 +78,12 @@ PostgresRunHistoryRepository::CreateRunAsync(const NewRunRecord& record)
 
 boost::asio::awaitable<bool>
 PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
-                                               std::span<const gameplay::workout_tracking::RunPoint> track)
+                                               std::span<const gameplay::workout_tracking::RunPoint> track,
+                                               std::vector<HexCaptureRecord>* captured_hexes_out)
 {
-    co_return co_await m_work_context.AsyncPost(
-        [summary, track]() -> bool
+    auto captured_hexes = std::make_shared<std::vector<HexCaptureRecord>>();
+    const bool persisted = co_await m_work_context.AsyncPost(
+        [summary, track, captured_hexes]() -> bool
         {
             try
             {
@@ -86,25 +91,33 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                 pqxx::work txn(*connection);
 
                 // [1] Runs row: final state. Invalid runs are stored too
-                // (history survives, nothing is scored).
-                txn.exec_params(
+                // (history survives, nothing is scored). The status guard
+                // makes a concurrent second finalize a no-op (0 rows) —
+                // belt-and-suspenders on top of the Redis closing marker.
+                const auto runs_row = txn.exec_params(
                     "UPDATE runs SET status = $2, total_distance_meters = $3, total_duration_seconds = $4, "
                     "    avg_pace_sec_per_km = $5, hexagons_captured = $6, game_points_earned = $7, "
                     "    is_valid = $8, validation_reason = $9, finished_at = to_timestamp($10 / 1000.0) "
-                    "WHERE id = $1",
+                    "WHERE id = $1 AND status = 'active'",
                     summary.server_run_id,
                     summary.close_reason == RunCloseReason::kCancelled ? "cancelled" : "finished",
                     summary.total_distance_meters, static_cast<int64_t>(summary.duration_seconds),
                     static_cast<int32_t>(summary.avg_pace_sec_per_km),
-                    static_cast<int32_t>(summary.hexagons_captured_count),
-                    static_cast<int32_t>(summary.total_score), summary.is_valid,
-                    std::string(ValidationReasonName(summary.verdict)),
+                    static_cast<int32_t>(summary.hexagons_captured_count), static_cast<int32_t>(summary.total_score),
+                    summary.is_valid, std::string(ValidationReasonName(summary.verdict)),
                     static_cast<int64_t>(summary.finished_at_ms));
+
+                if (runs_row.affected_rows() != 1)
+                {
+                    LOG_WARN("Run {} ('{}') is not active anymore — finalize refused", summary.server_run_id,
+                             summary.session_id);
+                    captured_hexes->clear();
+                    return false; // transaction rolls back
+                }
 
                 // [2] Track points: the track was assembled in the active-run
                 // store, PostgreSQL is its first durable copy.
-                txn.exec_params("DELETE FROM run_points WHERE run_id = $1",
-                                summary.server_run_id);
+                txn.exec_params("DELETE FROM run_points WHERE run_id = $1", summary.server_run_id);
                 constexpr std::size_t kBatchSize = 500;
                 constexpr int kFieldsPerPoint = 10;
                 for (std::size_t offset = 0; offset < track.size(); offset += kBatchSize)
@@ -125,8 +138,8 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                         const int base = static_cast<int>(i) * kFieldsPerPoint;
                         fmt::format_to(std::back_inserter(sql),
                                        "(${},${},${},${},${},${},${},${},${},to_timestamp(${} / 1000.0))", base + 1,
-                                       base + 2, base + 3, base + 4, base + 5, base + 6, base + 7, base + 8,
-                                       base + 9, base + 10);
+                                       base + 2, base + 3, base + 4, base + 5, base + 6, base + 7, base + 8, base + 9,
+                                       base + 10);
 
                         batch.append(static_cast<int64_t>(summary.server_run_id));
                         batch.append(static_cast<int32_t>(offset + i));
@@ -134,8 +147,7 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                         batch.append(point.coord.longitude);
                         batch.append(point.altitude_meters.has_value() ? std::make_optional(*point.altitude_meters)
                                                                        : std::nullopt);
-                        batch.append(point.speed_ms.has_value() ? std::make_optional(*point.speed_ms)
-                                                                : std::nullopt);
+                        batch.append(point.speed_ms.has_value() ? std::make_optional(*point.speed_ms) : std::nullopt);
                         batch.append(point.accuracy_meters);
                         batch.append(ToBigInt(point.h3_index));
                         batch.append(point.step_count); // optional<int32_t>: null when unset
@@ -148,9 +160,8 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                 // [3] Territory: upsert ownership, keep history, reinforce score.
                 for (const uint64_t hex : summary.claimed_hexes)
                 {
-                    const auto previous =
-                        txn.exec_params("SELECT owner_user_id, owner_team_id FROM hexagons WHERE h3_index = $1",
-                                        ToBigInt(hex));
+                    const auto previous = txn.exec_params(
+                        "SELECT owner_user_id, owner_team_id FROM hexagons WHERE h3_index = $1", ToBigInt(hex));
 
                     std::optional<int64_t> previous_owner;
                     std::optional<int64_t> previous_team;
@@ -164,6 +175,11 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                         {
                             previous_team = previous[0][1].as<int64_t>();
                         }
+                    }
+
+                    if (captured_hexes != nullptr)
+                    {
+                        captured_hexes->push_back(HexCaptureRecord{hex, previous_owner});
                     }
 
                     txn.exec_params(
@@ -214,9 +230,16 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
             catch (const std::exception& e)
             {
                 LOG_ERROR("Failed to finalize run {} ('{}'): {}", summary.server_run_id, summary.session_id, e.what());
+                captured_hexes->clear(); // rolled back with the transaction
                 return false;
             }
         });
+
+    if (persisted && captured_hexes_out != nullptr)
+    {
+        *captured_hexes_out = std::move(*captured_hexes);
+    }
+    co_return persisted;
 }
 
 } // namespace run::repository

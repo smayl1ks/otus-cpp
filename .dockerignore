@@ -1,0 +1,16 @@
+build/
+.cache/
+.git/
+.github/
+.vscode/
+scripts/runs.json
+scripts/pb/
+scripts/*.gpx
+vcpkg_installed/
+*.log
+scripts/.venv/
+scripts/__pycache__/
+**/__pycache__/
+dist/
+core*
+*.md

@@ -1,11 +1,15 @@
 #include "storage/redis/sentinel_monitor.hpp"
 #include "logger/logger.hpp"
 #include "monitoring/metrics_collector.hpp"
+#include "storage/redis/redis_exec_serialized.hpp"
+
+#include <boost/redis/error.hpp>
 
 #include <boost/asio/co_spawn.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/redirect_error.hpp>
 #include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <sstream>
 
@@ -40,12 +44,13 @@ net::awaitable<bool> SentinelMonitor::ResolveMasterAsync()
 
 net::awaitable<bool> SentinelMonitor::TryResolveFromSentinel(const SentinelNode& node)
 {
-    LOG_DEBUG("Attempting to resolve Redis master from Sentinel {}:{}", node.host, node.port);
+    LOG_INFO("Attempting to resolve Redis master from Sentinel {}:{}", node.host, node.port);
 
-    auto conn = std::make_shared<boost::redis::connection>(m_executor);
+    auto conn = std::make_shared<boost::redis::connection>(net::make_strand(m_executor));
     boost::redis::config cfg;
     cfg.addr.host = node.host;
     cfg.addr.port = node.port;
+    cfg.reconnect_wait_interval = std::chrono::seconds(0);
 
     boost::system::error_code ec;
 
@@ -56,8 +61,7 @@ net::awaitable<bool> SentinelMonitor::TryResolveFromSentinel(const SentinelNode&
 
     boost::redis::response<std::optional<std::vector<std::string>>> resp;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(std::chrono::seconds(2), net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, std::chrono::seconds(2), ec);
 
     conn->cancel();
 
@@ -136,7 +140,7 @@ net::awaitable<void> SentinelMonitor::MonitorLoopAsync()
 
         LOG_INFO("Connecting to Sentinel {}:{} to watch for failover events (+switch-master)...", node.host, node.port);
 
-        auto conn = std::make_shared<boost::redis::connection>(m_executor);
+        auto conn = std::make_shared<boost::redis::connection>(net::make_strand(m_executor));
         {
             std::lock_guard lock(m_mutex);
             m_subscriber_conn = conn;
@@ -148,99 +152,113 @@ net::awaitable<void> SentinelMonitor::MonitorLoopAsync()
 
         conn->async_run(cfg, net::consign(net::detached, conn));
 
-        boost::redis::request req;
-        req.push("SUBSCRIBE", "+switch-master");
-
-        boost::redis::generic_response sub_resp;
-        boost::system::error_code ec;
-
-        co_await conn->async_exec(req, sub_resp, net::redirect_error(net::use_awaitable, ec));
-
-        if (ec)
-        {
-            LOG_WARN("Failed to subscribe to Sentinel {}:{} (+switch-master): {}", node.host, node.port, ec.message());
-            conn->cancel();
-
-            net::steady_timer timer(co_await net::this_coro::executor);
-            timer.expires_after(std::chrono::seconds(2));
-            co_await timer.async_wait(net::use_awaitable);
-            continue;
-        }
-
-        LOG_INFO("Listening for Sentinel failover events on {}:{}...", node.host, node.port);
-
+        // SUBSCRIBE acks and +switch-master notifications arrive as RESP
+        // pushes consumed by the connection's receive path — they are NOT
+        // async_exec completions. Awaiting async_exec(SUBSCRIBE) with a
+        // response deadlocks (the ack needs the receive loop that only
+        // starts after), which silently killed failover following on
+        // 2026-11-01. The whole subscribe + consume cycle therefore runs ON
+        // the connection's strand: calling conn->receive() from any other
+        // thread is the #428-class race.
         boost::redis::generic_response push_resp;
         conn->set_receive_response(push_resp);
 
-        while (m_is_running)
-        {
-            push_resp.value().clear();
-
-            auto [rec_ec, n] = co_await conn->async_receive(net::as_tuple(net::use_awaitable));
-            if (rec_ec)
+        net::co_spawn(
+            conn->get_executor(),
+            [conn, push_resp, this]() mutable -> net::awaitable<void>
             {
-                LOG_WARN("Sentinel listener disconnected from {}:{}: {}", node.host, node.port, rec_ec.message());
-                break;
-            }
-
-            if (!push_resp.has_value())
-            {
-                continue;
-            }
-
-            const auto& nodes = push_resp.value();
-            for (size_t i = 0; i < nodes.size(); ++i)
-            {
-                // push notification format: [message, +switch-master, payload]
-                if (nodes[i].value == "message" && i + 2 < nodes.size())
+                while (conn->will_reconnect() && m_is_running)
                 {
-                    const std::string& channel = nodes[i + 1].value;
-                    const std::string& payload = nodes[i + 2].value;
+                    boost::redis::request req;
+                    req.push("SUBSCRIBE", "+switch-master");
 
-                    if (channel == "+switch-master")
+                    boost::system::error_code ec;
+                    co_await conn->async_exec(req, boost::redis::ignore,
+                                              net::redirect_error(net::use_awaitable, ec));
+                    if (ec)
                     {
-                        // Payload format: <master-name> <old-ip> <old-port> <new-ip> <new-port>
-                        std::stringstream ss(payload);
-                        std::string master_name, old_ip, old_port, new_ip, new_port;
-                        ss >> master_name >> old_ip >> old_port >> new_ip >> new_port;
+                        LOG_WARN("Failed to subscribe to +switch-master: {}", ec.message());
+                        co_return;
+                    }
 
-                        if (master_name == m_config.master_name && !new_ip.empty() && !new_port.empty())
+                    LOG_INFO("Listening for Sentinel failover events (+switch-master)...");
+
+                    while (!ec && m_is_running)
+                    {
+                        ec = {};
+                        conn->receive(ec);
+                        if (ec == boost::redis::error::sync_receive_push_failed)
                         {
-                            LOG_WARN(">>> SENTINEL FAILOVER DETECTED: Master '{}' moved from {}:{} to {}:{} <<<",
-                                     master_name, old_ip, old_port, new_ip, new_port);
-                            monitoring::MetricsCollector::Instance().IncrementSentinelFailover(master_name);
+                            ec = {};
+                            co_await conn->async_receive(
+                                net::redirect_error(net::use_awaitable, ec));
+                        }
+                        if (ec)
+                        {
+                            break; // connection lost; re-subscribe after reconnect
+                        }
 
-                            std::vector<MasterChangedCallback> cbs;
-                            {
-                                std::lock_guard lock(m_mutex);
-                                m_master_host = new_ip;
-                                m_master_port = new_port;
-                                cbs = m_callbacks;
-                            }
+                        // Push payload: ["message", channel, data]
+                        while (push_resp.has_value() && push_resp.value().size() >= 3)
+                        {
+                            const auto& channel = push_resp.value().at(1).value;
+                            const auto& payload = push_resp.value().at(2).value;
 
-                            for (const auto& cb : cbs)
+                            if (channel == "+switch-master")
                             {
-                                if (cb)
+                                // Payload: <master-name> <old-ip> <old-port> <new-ip> <new-port>
+                                std::stringstream ss(payload);
+                                std::string master_name, old_ip, old_port, new_ip, new_port;
+                                ss >> master_name >> old_ip >> old_port >> new_ip >> new_port;
+
+                                if (master_name == m_config.master_name && !new_ip.empty() && !new_port.empty())
                                 {
-                                    cb(new_ip, new_port);
+                                    LOG_WARN(">>> SENTINEL FAILOVER DETECTED: Master '{}' moved from {}:{} to {}:{} <<<",
+                                             master_name, old_ip, old_port, new_ip, new_port);
+                                    monitoring::MetricsCollector::Instance().IncrementSentinelFailover(master_name);
+
+                                    std::vector<MasterChangedCallback> cbs;
+                                    {
+                                        std::lock_guard lock(m_mutex);
+                                        m_master_host = new_ip;
+                                        m_master_port = new_port;
+                                        cbs = m_callbacks;
+                                    }
+
+                                    for (const auto& cb : cbs)
+                                    {
+                                        if (cb)
+                                        {
+                                            cb(new_ip, new_port);
+                                        }
+                                    }
                                 }
                             }
+
+                            boost::redis::consume_one(push_resp);
                         }
                     }
-                    break;
                 }
-            }
+            },
+            net::detached);
+
+        // The strand worker exits only on connection loss or shutdown.
+        // While it lives, wait here and rotate on shutdown.
+        net::steady_timer timer(co_await net::this_coro::executor);
+        while (m_is_running && conn->will_reconnect())
+        {
+            timer.expires_after(std::chrono::seconds(2));
+            co_await timer.async_wait(net::use_awaitable);
         }
 
         conn->cancel();
 
         if (m_is_running)
         {
-            net::steady_timer timer(co_await net::this_coro::executor);
-            timer.expires_after(std::chrono::seconds(1));
-            co_await timer.async_wait(net::use_awaitable);
+            net::steady_timer backoff(co_await net::this_coro::executor);
+            backoff.expires_after(std::chrono::seconds(2));
+            co_await backoff.async_wait(net::use_awaitable);
         }
     }
 }
-
 } // namespace run::storage::redis

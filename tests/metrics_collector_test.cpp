@@ -1,7 +1,7 @@
-#include <gtest/gtest.h>
 #include "monitoring/metrics_collector.hpp"
 #include "network/server/session_manager.hpp"
 #include "network/server/user_session.hpp"
+#include <gtest/gtest.h>
 
 #include <boost/asio/io_context.hpp>
 
@@ -18,7 +18,9 @@ private:
     bool m_closed{false};
 
 public:
-    explicit MockUserSession(uint64_t id) : m_id(id) {}
+    explicit MockUserSession(uint64_t id) : m_id(id)
+    {
+    }
 
     boost::asio::any_io_executor GetExecutor() override
     {
@@ -30,10 +32,23 @@ public:
         return m_id;
     }
 
-    void Send(std::string) override {}
-    void SendProtobuf(const run::proto::Envelope&) override {}
-    void RequestClose() override { m_closed = true; }
-    void Close() override { m_closed = true; }
+    void Send(std::string) override
+    {
+    }
+
+    void SendProtobuf(const run::proto::Envelope&) override
+    {
+    }
+
+    void RequestClose(int = 1000) override
+    {
+        m_closed = true;
+    }
+
+    void Close() override
+    {
+        m_closed = true;
+    }
 
     void UpdateSubscribedZones(const std::vector<uint64_t>& zones) override
     {
@@ -46,9 +61,20 @@ public:
         return m_zones;
     }
 
-    uint64_t GetActiveRunId() const noexcept override { return m_run_id; }
-    void SetActiveRunId(uint64_t run_id) noexcept override { m_run_id = run_id; }
-    bool IsClosed() const noexcept { return m_closed; }
+    uint64_t GetActiveRunId() const noexcept override
+    {
+        return m_run_id;
+    }
+
+    void SetActiveRunId(uint64_t run_id) noexcept override
+    {
+        m_run_id = run_id;
+    }
+
+    bool IsClosed() const noexcept
+    {
+        return m_closed;
+    }
 };
 
 } // namespace

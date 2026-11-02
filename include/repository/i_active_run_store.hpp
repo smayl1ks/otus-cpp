@@ -45,6 +45,12 @@ public:
     virtual boost::asio::awaitable<bool> ClaimBatchAsync(const std::string& session_id,
                                                          const std::string& batch_uuid) = 0;
 
+    /// Releases a claim whose append failed, so the client retry is not
+    /// swallowed as a duplicate (claim-before-append ordering stays: two
+    /// concurrent copies of one batch are still gated by the claim).
+    virtual boost::asio::awaitable<void> ReleaseClaimBatchAsync(const std::string& session_id,
+                                                                const std::string& batch_uuid) = 0;
+
     /// Appends validated points, adds delta distance and advances last_sequence_number.
     virtual boost::asio::awaitable<bool> AppendTrackBatchAsync(const std::string& session_id,
                                                                std::span<const gameplay::workout_tracking::RunPoint>
@@ -56,6 +62,16 @@ public:
     GetTrackAsync(const std::string& session_id) = 0;
 
     // ---- Idempotent close --------------------------------------------------
+
+    /// Atomic close marker (SETNX run:closing:{session_id}, short TTL).
+    /// false = another coroutine (possibly on another node) is finalizing
+    /// this session right now: the caller must not run its own close
+    /// pipeline — that is the guard against double finalization.
+    virtual boost::asio::awaitable<bool> TryClaimClosingAsync(const std::string& session_id) = 0;
+
+    /// Drops the closing marker after a failed finalize attempt so a retry
+    /// can start over. A successful close removes it inside DropRunDataAsync.
+    virtual boost::asio::awaitable<void> ReleaseClosingAsync(const std::string& session_id) = 0;
 
     virtual boost::asio::awaitable<bool> SaveRunSummaryAsync(const StoredRunSummary& summary) = 0;
 

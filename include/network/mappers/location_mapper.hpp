@@ -55,9 +55,15 @@ public:
     static std::vector<gameplay::anticheat::TelemetryPoint>
     ToTelemetryPoints(const ::run::proto::telemetry::LocationBatch& batch)
     {
+        return ToTelemetryPoints(batch.points());
+    }
+
+    static std::vector<gameplay::anticheat::TelemetryPoint>
+    ToTelemetryPoints(const google::protobuf::RepeatedPtrField<::run::proto::telemetry::LocationPoint>& points)
+    {
         std::vector<gameplay::anticheat::TelemetryPoint> result;
-        result.reserve(batch.points_size());
-        for (const auto& proto_pt : batch.points())
+        result.reserve(static_cast<std::size_t>(points.size()));
+        for (const auto& proto_pt : points)
         {
             result.push_back(ToTelemetryPoint(proto_pt));
         }
@@ -164,7 +170,8 @@ public:
         return ::run::proto::telemetry::ANTICHEAT_STATUS_UNSPECIFIED;
     }
 
-    static gameplay::anticheat::AnticheatStatus FromProto(::run::proto::telemetry::AnticheatStatus proto_status) noexcept
+    static gameplay::anticheat::AnticheatStatus
+    FromProto(::run::proto::telemetry::AnticheatStatus proto_status) noexcept
     {
         switch (proto_status)
         {

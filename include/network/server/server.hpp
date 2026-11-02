@@ -17,12 +17,12 @@
 #include "controllers/protobuf_controller.hpp"
 
 #include "repository/i_run_history_repository.hpp"
-#include "repository/in_memory_auth_stores.hpp"
 #include "repository/iredis_repository.hpp"
 #include "repository/iuser_repository.hpp"
 
 #include "service/auth_service.hpp"
-#include "service/running/service_stack.hpp"
+#include "service/running/running_services.hpp"
+#include "storage/redis/redis_pub_sub_worker.hpp"
 
 namespace run::server
 {
@@ -63,8 +63,9 @@ private:
     std::shared_ptr<controller::HttpController> m_http_controller;
     std::shared_ptr<controller::ProtobufController> m_protobuf_controller;
 
-    std::shared_ptr<service::running::ServiceStack> m_service_stack;
+    std::shared_ptr<service::running::RunningServices> m_running_services;
     std::shared_ptr<service::AuthService> m_auth_service;
+    std::shared_ptr<storage::redis::RedisPubSubWorker> m_pubsub_worker;
 };
 
 } // namespace run::server

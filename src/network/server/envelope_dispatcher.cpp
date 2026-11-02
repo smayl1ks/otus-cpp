@@ -15,7 +15,7 @@ const char* PayloadCaseToString(run::proto::Envelope::PayloadCase c)
     case run::proto::Envelope::PayloadCase::kOfflineRunInitRequest: return "OfflineRunInitRequest";
     case run::proto::Envelope::PayloadCase::kOfflineRunChunkRequest: return "OfflineRunChunkRequest";
     case run::proto::Envelope::PayloadCase::kOfflineRunCommitRequest: return "OfflineRunCommitRequest";
-    case run::proto::Envelope::PayloadCase::kSubscribeViewportRequest: return "SubscribeViewportRequest";
+    case run::proto::Envelope::PayloadCase::kSubscribeViewportRequest: return "SubscribeViewport";
     default: return "other";
     }
 }
@@ -27,7 +27,7 @@ namespace run::server
 {
 
 boost::asio::awaitable<std::optional<run::proto::Envelope>>
-DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::running::ServiceStack& services)
+DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::running::RunningServices& services)
 {
     if (request.payload_case() == run::proto::Envelope::PAYLOAD_NOT_SET)
     {
@@ -79,6 +79,12 @@ DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::run
             co_await services.offline_upload_service.CommitAsync(user_id, request.offline_run_commit_request());
         break;
 
+    // SubscribeViewport never reaches the dispatcher: the gateway fallback
+    // owns it (zone subscription + snapshot, which needs the hex cache).
+    // Reaching this switch means the fallback was not installed — drop the
+    // message instead of answering with a fake-empty OK that masks a broken
+    // deployment; the metric label above still records the attempt.
+
     // --- Server -> client events and unknown payloads ----------------------
     case Case::kBatchProcessResponse:
     case Case::kStartRunResponse:
@@ -88,10 +94,10 @@ DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::run
     case Case::kOfflineRunInitResponse:
     case Case::kOfflineRunChunkResponse:
     case Case::kOfflineRunCommitResponse:
-    case Case::kSubscribeViewportRequest:
     case Case::kSubscribeViewportResponse:
     case Case::kHexagonCaptureEvent:
     case Case::kRadarPing:
+    case Case::kSubscribeViewportRequest:
         LOG_WARN("[dispatcher] unexpected payload case {} from user {}", static_cast<int>(request.payload_case()),
                  user_id);
         co_return std::nullopt;

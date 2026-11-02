@@ -41,11 +41,6 @@ namespace net = boost::asio;
  *    across multiple Boost.Asio I/O threads/strands, this class maintains an active pool
  *    of N independent multiplexed connections (`pool_size`, default 2-4) to the resolved
  *    shard master. Requests are dispatched via atomic round-robin.
- *
- * 3. **Hot-Path TTL Throttling**:
- *    Instead of issuing redundant `EXPIRE` commands on every GPS point (which halves Redis
- *    throughput), TTL is renewed at a configurable interval (30-60 seconds) per active run,
- *    recording `last_ttl_refresh` in the `run:active:<run_id>` hash.
  */
 class RedisConnectionPool : public std::enable_shared_from_this<RedisConnectionPool>,
                             public IBatchFlusher<DeferredTrackEvent>
@@ -63,9 +58,7 @@ public:
 
     net::awaitable<bool> PingAsync();
 
-    // Telemetry & Track
-    net::awaitable<bool> PushTrackPointAsync(uint64_t run_id, double lat, double lon, double speed, int64_t ts);
-    net::awaitable<bool> UpdateActiveRunStatsAsync(uint64_t run_id, double delta_meters, int32_t delta_points);
+    // Telemetry & Track (batched write-through of validated track events)
     net::awaitable<bool> FlushTrackBatchAsync(const std::vector<DeferredTrackEvent>& batch);
 
     // IBatchFlusher interface implementation
@@ -104,6 +97,16 @@ public:
     net::awaitable<std::optional<std::string>> HGetAsync(const std::string& key, const std::string& field);
     net::awaitable<std::unordered_map<std::string, std::string>> HGetAllAsync(const std::string& key);
 
+    /// Pipelined HGETALL: all keys in ONE request on this connection.
+    /// Results are ordered per input key; an expired/missing key yields an
+    /// empty map, a transport failure yields all-empty (caller retries).
+    net::awaitable<std::vector<std::unordered_map<std::string, std::string>>>
+    HGetAllManyAsync(const std::vector<std::string>& keys);
+
+    /// Executes a pre-built multi-command request in one round trip and
+    /// discards the replies (write batches). false = transport/command error.
+    net::awaitable<bool> ExecBatchAsync(const boost::redis::request& commands);
+
     // List helpers (full track retrieval for finish-time capture resolve)
     net::awaitable<std::vector<std::string>> LRangeAsync(const std::string& key, int64_t start, int64_t stop);
     net::awaitable<bool> RPushRangeAsync(const std::string& key, const std::vector<std::string>& values,
@@ -121,10 +124,6 @@ public:
     std::size_t GetConnectionCount() const noexcept;
     std::size_t GetPoolSize() const noexcept;
 
-    // TTL Optimization Helper
-    bool ShouldRefreshTtl(uint64_t run_id);
-    void InvalidateTtl(uint64_t run_id);
-
 private:
     std::shared_ptr<boost::redis::connection> GetConnection() const;
 
@@ -140,10 +139,6 @@ private:
     // Pool of multiplexed Boost.Redis connections
     std::vector<std::shared_ptr<boost::redis::connection>> m_connections;
     mutable std::atomic<std::size_t> m_next_connection{0};
-
-    // Hot-path TTL renewal throttle cache: run_id -> last_refresh_time
-    mutable std::mutex m_ttl_mutex;
-    std::unordered_map<uint64_t, std::chrono::steady_clock::time_point> m_last_ttl_refresh;
 };
 
 } // namespace run::storage::redis

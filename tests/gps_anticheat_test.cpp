@@ -1,6 +1,7 @@
 #include "gameplay/anticheat/anticheat.hpp"
 
 #include <gtest/gtest.h>
+#include <limits>
 #include <vector>
 
 namespace run::gameplay::anticheat::testing
@@ -106,6 +107,48 @@ TEST_F(GpsAntiCheatTest, ValidateBatch_InstantTeleportation_ReturnsTeleportDetec
     };
 
     EXPECT_EQ(m_validator.ValidateBatch(batch, kBaseTimestampMs), AnticheatStatus::TeleportationDetected);
+}
+
+
+TEST_F(GpsAntiCheatTest, ValidatePoint_NanCoordinates_RejectedAsUntrusted)
+{
+    // NaN fails every range comparison silently and poisons all downstream
+    // distances (gameplay review §1.3): rejected as an untrusted position.
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const TelemetryPoint nan_lat = CreatePoint(nan, 37.618423, kBaseTimestampMs);
+    const TelemetryPoint nan_lon = CreatePoint(55.751244, nan, kBaseTimestampMs);
+    EXPECT_EQ(m_validator.ValidatePoint(nan_lat, kBaseTimestampMs), AnticheatStatus::GpsAccuracyLow);
+    EXPECT_EQ(m_validator.ValidatePoint(nan_lon, kBaseTimestampMs), AnticheatStatus::GpsAccuracyLow);
+    const std::vector<TelemetryPoint> batch_with_nan{nan_lon};
+    EXPECT_EQ(m_validator.ValidateBatch(batch_with_nan, kBaseTimestampMs), AnticheatStatus::GpsAccuracyLow);
+}
+
+TEST_F(GpsAntiCheatTest, ValidatePoint_PastDrift_BoundedTo24h)
+{
+    // Past-drift used to be unbounded: a 1970 timestamp survived the point
+    // check and only the coarse max-duration threshold caught it (§4).
+    const TelemetryPoint too_old = CreatePoint(55.751244, 37.618423, kBaseTimestampMs - 24 * 3600 * 1000 - 1);
+    const TelemetryPoint old_but_valid = CreatePoint(55.751244, 37.618423, kBaseTimestampMs - 23 * 3600 * 1000);
+    EXPECT_EQ(m_validator.ValidatePoint(too_old, kBaseTimestampMs), AnticheatStatus::InvalidTimestamps);
+    EXPECT_EQ(m_validator.ValidatePoint(old_but_valid, kBaseTimestampMs), AnticheatStatus::Ok);
+}
+
+TEST_F(GpsAntiCheatTest, ValidateSegment_InterBatchTimeGap_SmallDistance_Passes)
+{
+    // Legal resume/time-warp gap between batches: big dt over a short
+    // distance — the runner "stood still" during the gap.
+    const auto prev = CreatePoint(55.751244, 37.618423, kBaseTimestampMs);
+    const auto next = CreatePoint(55.751334, 37.618423, kBaseTimestampMs + 10'000); // ~10 m, 10 s later
+    EXPECT_EQ(m_validator.ValidateSegment(prev, next), AnticheatStatus::Ok);
+}
+
+TEST_F(GpsAntiCheatTest, ValidateSegment_InterBatchTeleport_Rejected)
+{
+    // The §1.1 cheat: honest 10 m batches with a 2 km jump BETWEEN them
+    // (dt > 1 s, so the speed check is the backstop: 2000 m / 5 s = 400 m/s).
+    const auto prev = CreatePoint(55.751244, 37.618423, kBaseTimestampMs);
+    const auto next = CreatePoint(55.769244, 37.618423, kBaseTimestampMs + 5'000);
+    EXPECT_EQ(m_validator.ValidateSegment(prev, next), AnticheatStatus::SpeedLimitExceeded);
 }
 
 } // namespace run::gameplay::anticheat::testing

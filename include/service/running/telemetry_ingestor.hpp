@@ -11,6 +11,8 @@
 namespace run::service::running
 {
 
+namespace net = boost::asio;
+
 // Hot path of the whole backend: one call per telemetry batch. Contract:
 // never touches PostgreSQL, never blocks on radar, all-or-nothing batch
 // ingestion. Everything is keyed by session_id.
@@ -21,13 +23,11 @@ public:
                       std::shared_ptr<RadarPublisher> radar_publisher,
                       gameplay::anticheat::GpsAntiCheatConfig anticheat_config = {});
 
-    boost::asio::awaitable<run::proto::telemetry::BatchProcessResponse>
+    net::awaitable<run::proto::telemetry::BatchProcessResponse>
     ProcessBatchAsync(int64_t user_id, const run::proto::telemetry::LocationBatch& batch);
 
 private:
-    static int64_t NowMs() noexcept;
-
-    std::shared_ptr<repository::IActiveRunStore> m_store;
+    std::shared_ptr<repository::IActiveRunStore> m_run_store;
     std::shared_ptr<RadarPublisher> m_radar;
     gameplay::anticheat::GpsAntiCheat m_anticheat;
 };

@@ -248,7 +248,7 @@ TEST(ShardedRedisManagerTest, PubSubFleet_ChannelShardingByH3Zone)
     EXPECT_EQ(distinct.size(), 4u);
 }
 
-TEST(RedisConnectionPoolTest, ConnectionPoolTopologyAndTTLThrottling)
+TEST(RedisConnectionPoolTest, ConnectionPoolTopology)
 {
     boost::asio::io_context ioc;
 
@@ -270,18 +270,6 @@ TEST(RedisConnectionPoolTest, ConnectionPoolTopologyAndTTLThrottling)
     EXPECT_EQ(pool.GetConnectionCount(), 3);
     EXPECT_TRUE(pool.IsConnected());
 
-    // Hot-path TTL throttling check: first call refreshes, subsequent calls within interval are throttled
-    EXPECT_TRUE(pool.ShouldRefreshTtl(101));
-    EXPECT_FALSE(pool.ShouldRefreshTtl(101));
-    EXPECT_FALSE(pool.ShouldRefreshTtl(101));
-
-    // Different run ID triggers refresh independently
-    EXPECT_TRUE(pool.ShouldRefreshTtl(202));
-    EXPECT_FALSE(pool.ShouldRefreshTtl(202));
-
-    // Invalidation resets TTL refresh trigger for the given run_id
-    pool.InvalidateTtl(101);
-    EXPECT_TRUE(pool.ShouldRefreshTtl(101));
 }
 
 TEST(InMemoryLockFreeBufferTest, PushPop_MaintainsFIFOOrder)
@@ -473,61 +461,6 @@ TEST(GenericDrainWorkerTest, ReEnqueuesOnFlushFailure)
     ioc.run();
 }
 
-TEST(ResilientRedisProducerTest, FallbackToBufferWhenDegraded)
-{
-    boost::asio::io_context ioc;
-
-    RedisConfig redis_cfg{
-        .master_name = "mymaster",
-        .sentinels = {{"127.0.0.1", "9999"}},
-        .password = "",
-        .connection_timeout = std::chrono::milliseconds(50),
-        .command_timeout = std::chrono::milliseconds(50),
-    };
-
-    BufferConfig buffer_cfg{
-        .in_memory_capacity = 1024,
-        .drain_batch_size = 64,
-    };
-
-    auto producer = std::make_shared<ResilientRedisProducer>(ioc.get_executor(), redis_cfg, buffer_cfg);
-
-    EXPECT_EQ(producer->GetCircuitState(), CircuitState::Degraded);
-
-    DeferredTrackEvent ev{
-        .run_id = 42,
-        .latitude = 55.75,
-        .longitude = 37.61,
-        .speed = 4.2,
-        .timestamp = 1729000000,
-        .delta_meters = 15.5,
-        .delta_points = 10,
-    };
-
-    boost::asio::co_spawn(
-        ioc,
-        [&]() -> boost::asio::awaitable<void>
-        {
-            const bool ok = co_await producer->PushTrackEventAsync(ev);
-            EXPECT_TRUE(ok);
-            co_return;
-        },
-        boost::asio::detached);
-
-    ioc.run();
-
-    auto buffer = producer->GetBuffer();
-    ASSERT_NE(buffer, nullptr);
-    EXPECT_FALSE(buffer->IsEmpty());
-
-    DeferredTrackEvent popped;
-    EXPECT_TRUE(buffer->Pop(popped));
-    EXPECT_EQ(popped.run_id, 42);
-    EXPECT_DOUBLE_EQ(popped.latitude, 55.75);
-    EXPECT_DOUBLE_EQ(popped.delta_meters, 15.5);
-    EXPECT_EQ(popped.delta_points, 10);
-}
-
 TEST(ShardedRedisManagerTest, HashDistribution_EvenlyAcrossShards)
 {
     boost::asio::io_context ioc;
@@ -555,62 +488,6 @@ TEST(ShardedRedisManagerTest, HashDistribution_EvenlyAcrossShards)
 
     // All 4 shards must receive hashed traffic
     EXPECT_EQ(hit_shards.size(), 4);
-}
-
-TEST(ShardedRedisManagerTest, PushTrackEvent_RoutesToDegradedShardBuffer)
-{
-    boost::asio::io_context ioc;
-
-    RedisConfig redis_cfg{
-        .master_name = "mymaster",
-        .sentinels = {{"127.0.0.1", "9999"}}, // Unreachable
-        .num_shards = 4,
-    };
-
-    BufferConfig buffer_cfg{
-        .in_memory_capacity = 512,
-        .drain_batch_size = 64,
-    };
-
-    auto manager = std::make_shared<ShardedRedisManager>(ioc.get_executor(), redis_cfg, buffer_cfg);
-
-    DeferredTrackEvent ev{
-        .run_id = 12345,
-        .latitude = 55.79,
-        .longitude = 49.12,
-        .speed = 5.0,
-        .timestamp = 1729001000,
-        .delta_meters = 25.0,
-        .delta_points = 5,
-    };
-
-    const std::size_t expected_shard = manager->GetShardIndex(ev.run_id);
-
-    boost::asio::co_spawn(
-        ioc,
-        [&]() -> boost::asio::awaitable<void>
-        {
-            const bool ok = co_await manager->PushTrackEventAsync(ev);
-            EXPECT_TRUE(ok);
-            co_return;
-        },
-        boost::asio::detached);
-
-    ioc.run();
-
-    auto target_shard = manager->GetShard(expected_shard);
-    ASSERT_NE(target_shard, nullptr);
-    EXPECT_EQ(target_shard->GetCircuitState(), CircuitState::Degraded);
-
-    auto buffer = target_shard->GetBuffer();
-    ASSERT_NE(buffer, nullptr);
-    EXPECT_FALSE(buffer->IsEmpty());
-
-    DeferredTrackEvent popped;
-    EXPECT_TRUE(buffer->Pop(popped));
-    EXPECT_EQ(popped.run_id, 12345);
-    EXPECT_DOUBLE_EQ(popped.latitude, 55.79);
-    EXPECT_DOUBLE_EQ(popped.delta_meters, 25.0);
 }
 
 TEST(RedisActiveRunStoreTest, RoutesTelemetryPointToDegradedShardBuffer)

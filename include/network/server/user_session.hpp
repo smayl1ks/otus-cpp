@@ -18,7 +18,9 @@ namespace run::server::session
  * Send/SendProtobuf are thread-safe and never block: payloads go into a
  * bounded concurrent channel drained by the session's write loop; on overflow
  * the payload is dropped (and counted). RequestClose flushes queued payloads
- * and finishes the WebSocket with 1001 Going Away; Close is the hard cut.
+ * and finishes the WebSocket with the given close code — 1000 Normal Closure
+ * for purposeful closes (run finished, slow/malformed client); 1001 Going
+ * Away is reserved for the server shutdown hook. Close is the hard cut.
  */
 class UserSession
 {
@@ -30,7 +32,7 @@ public:
 
     virtual void Send(std::string bytes) = 0;
     virtual void SendProtobuf(const run::proto::Envelope& envelope) = 0;
-    virtual void RequestClose() = 0;
+    virtual void RequestClose(int close_code = 1000) = 0;
     virtual void Close() = 0;
 
     // viewport subscriptions, res=6 parents

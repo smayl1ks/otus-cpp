@@ -37,8 +37,6 @@ public:
 
     bool EnableSSL();
 
-    /// Runs before Stop() on SIGINT/SIGTERM: the server flushes sessions
-    /// (1001 Going Away) and calls Stop() when the drain is done.
     void SetShutdownHook(std::function<void()> hook);
 
     IOContext& GetIOContext() noexcept

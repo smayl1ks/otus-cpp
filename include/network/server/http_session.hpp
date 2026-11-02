@@ -20,6 +20,10 @@ template <typename Stream>
 class HttpSession : public std::enable_shared_from_this<HttpSession<Stream>>
 {
 private:
+    // Mirrors nginx client_max_body_size: the nodes are also reachable
+    // directly (bypassing nginx), so the limit cannot live only at the proxy.
+    static constexpr std::size_t kMaxRequestBodyBytes = 1024 * 1024;
+
     Stream m_stream;
     beast::flat_buffer m_buffer;
     http::request<http::string_body> m_request;
@@ -104,17 +108,30 @@ public:
         {
             m_request = {};
             beast::get_lowest_layer(m_stream).expires_after(std::chrono::seconds(15));
-            co_await http::async_read(m_stream, m_buffer, m_request, net::redirect_error(net::use_awaitable, ec));
+            http::request_parser<http::string_body> parser;
+            parser.body_limit(kMaxRequestBodyBytes);
+            co_await http::async_read(m_stream, m_buffer, parser, net::redirect_error(net::use_awaitable, ec));
 
             if (ec == http::error::end_of_stream)
             {
                 break;
+            }
+            if (ec == http::error::body_limit)
+            {
+                http::response<http::string_body> res{http::status::payload_too_large, 11};
+                res.set(http::field::server, "Run Uram Server");
+                res.set(http::field::content_type, "application/json");
+                res.body() = R"({"status":"error","message":"Request body too large"})";
+                res.prepare_payload();
+                co_await http::async_write(m_stream, res, net::redirect_error(net::use_awaitable, ec));
+                co_return;
             }
             if (ec)
             {
                 LOG_DEBUG("HTTP read error: {}", ec.message());
                 co_return;
             }
+            m_request = parser.release();
 
             if (beast::websocket::is_upgrade(m_request))
             {

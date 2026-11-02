@@ -1,11 +1,13 @@
 #include "storage/redis/redis_connection_pool.hpp"
 #include "logger/logger.hpp"
+#include "storage/redis/redis_exec_serialized.hpp"
 #include <boost/redis/src.hpp>
 
 #include <boost/asio/cancel_after.hpp>
 #include <boost/asio/consign.hpp>
 #include <boost/asio/detached.hpp>
 #include <boost/asio/redirect_error.hpp>
+#include <boost/asio/strand.hpp>
 #include <boost/asio/use_awaitable.hpp>
 #include <charconv>
 #include <fmt/format.h>
@@ -60,7 +62,8 @@ void RedisConnectionPool::ConnectToMaster(const std::string& host, const std::st
     LOG_INFO("Connecting pool of {} multiplexed connection(s) to Redis master at {}:{}...", pool_size, host, port);
     for (std::size_t i = 0; i < pool_size; ++i)
     {
-        auto conn = std::make_shared<boost::redis::connection>(m_executor);
+        auto conn_strand = net::make_strand(m_executor);
+        auto conn = std::make_shared<boost::redis::connection>(conn_strand);
         conn->async_run(cfg, net::consign(net::detached, conn));
         m_connections.push_back(std::move(conn));
     }
@@ -95,14 +98,33 @@ std::shared_ptr<boost::redis::connection> RedisConnectionPool::GetConnection() c
     {
         return nullptr;
     }
-    const std::size_t idx = m_next_connection.fetch_add(1, std::memory_order_relaxed) % m_connections.size();
-    return m_connections[idx];
+    const std::size_t total = m_connections.size();
+    for (std::size_t i = 0; i < total; ++i)
+    {
+        const std::size_t idx = m_next_connection.fetch_add(1, std::memory_order_relaxed) % total;
+        if (m_connections[idx])
+        {
+            return m_connections[idx];
+        }
+    }
+    return nullptr;
 }
 
 bool RedisConnectionPool::IsConnected() const noexcept
 {
     std::lock_guard lock(m_mutex);
-    return m_is_connected && !m_connections.empty();
+    if (!m_is_connected || m_connections.empty())
+    {
+        return false;
+    }
+    for (const auto& conn : m_connections)
+    {
+        if (conn)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::pair<std::string, std::string> RedisConnectionPool::GetActiveMaster() const
@@ -122,44 +144,6 @@ std::size_t RedisConnectionPool::GetPoolSize() const noexcept
     return m_config.pool_size;
 }
 
-bool RedisConnectionPool::ShouldRefreshTtl(uint64_t run_id)
-{
-    const auto now = std::chrono::steady_clock::now();
-    const auto interval =
-        m_config.ttl_refresh_interval.count() > 0 ? m_config.ttl_refresh_interval : std::chrono::seconds(30);
-
-    std::lock_guard lock(m_ttl_mutex);
-    auto it = m_last_ttl_refresh.find(run_id);
-    if (it == m_last_ttl_refresh.end() || (now - it->second) >= interval)
-    {
-        m_last_ttl_refresh[run_id] = now;
-
-        if (m_last_ttl_refresh.size() > 20000)
-        {
-            for (auto iter = m_last_ttl_refresh.begin(); iter != m_last_ttl_refresh.end();)
-            {
-                if (now - iter->second > std::chrono::minutes(15))
-                {
-                    iter = m_last_ttl_refresh.erase(iter);
-                }
-                else
-                {
-                    ++iter;
-                }
-            }
-        }
-
-        return true;
-    }
-    return false;
-}
-
-void RedisConnectionPool::InvalidateTtl(uint64_t run_id)
-{
-    std::lock_guard lock(m_ttl_mutex);
-    m_last_ttl_refresh.erase(run_id);
-}
-
 net::awaitable<bool> RedisConnectionPool::PingAsync()
 {
     auto conn = GetConnection();
@@ -174,8 +158,7 @@ net::awaitable<bool> RedisConnectionPool::PingAsync()
     boost::redis::response<std::string> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -184,96 +167,6 @@ net::awaitable<bool> RedisConnectionPool::PingAsync()
     }
 
     co_return (std::get<0>(resp).value() == "PONG");
-}
-
-net::awaitable<bool> RedisConnectionPool::PushTrackPointAsync(uint64_t run_id, double lat, double lon, double speed,
-                                                              int64_t ts)
-{
-    auto conn = GetConnection();
-    if (!conn)
-    {
-        co_return false;
-    }
-
-    const std::string track_key = fmt::format("run:track:{}", run_id);
-    const std::string point_str = fmt::format("{},{},{},{}", lat, lon, speed, ts);
-
-    boost::redis::request req;
-    req.push("RPUSH", track_key, point_str);
-
-    // Optimized: Only refresh TTL at configured interval (30-60s) instead of per point
-    if (ShouldRefreshTtl(run_id))
-    {
-        req.push("EXPIRE", track_key, "86400");
-        const std::string active_key = fmt::format("run:active:{}", run_id);
-        req.push("EXPIRE", active_key, "86400");
-        const auto now_sec =
-            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
-    }
-
-    boost::redis::generic_response resp;
-    boost::system::error_code ec;
-
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
-
-    if (ec)
-    {
-        LOG_WARN("Redis RPUSH track point failed for run {}: {}", run_id, ec.message());
-        co_return false;
-    }
-
-    co_return true;
-}
-
-net::awaitable<bool> RedisConnectionPool::UpdateActiveRunStatsAsync(uint64_t run_id, double delta_meters,
-                                                                    int32_t delta_points)
-{
-    auto conn = GetConnection();
-    if (!conn)
-    {
-        co_return false;
-    }
-
-    const std::string active_key = fmt::format("run:active:{}", run_id);
-
-    boost::redis::request req;
-    if (delta_meters > 0.0)
-    {
-        req.push("HINCRBYFLOAT", active_key, "distance_meters", fmt::format("{:.2f}", delta_meters));
-    }
-    if (delta_points > 0)
-    {
-        req.push("HINCRBY", active_key, "points_count", std::to_string(delta_points));
-    }
-
-    // Refresh TTL periodically if due
-    if (ShouldRefreshTtl(run_id))
-    {
-        req.push("EXPIRE", active_key, "86400");
-        const std::string track_key = fmt::format("run:track:{}", run_id);
-        req.push("EXPIRE", track_key, "86400");
-        const auto now_sec =
-            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count();
-        req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
-    }
-
-    boost::redis::generic_response resp;
-    boost::system::error_code ec;
-
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
-
-    if (ec)
-    {
-        LOG_WARN("Redis update active run stats failed for run {}: {}", run_id, ec.message());
-        co_return false;
-    }
-
-    co_return true;
 }
 
 net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector<DeferredTrackEvent>& batch)
@@ -296,6 +189,9 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
         double total_delta_meters{0.0};
         int32_t total_delta_points{0};
         int64_t last_sequence_number{0};
+        double last_lat{0.0};
+        double last_lon{0.0};
+        int64_t last_ts_ms{0};
     };
 
     std::unordered_map<std::string, RunBatchAggregate> grouped;
@@ -308,11 +204,12 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
         data.total_delta_meters += ev.delta_meters;
         data.total_delta_points += ev.delta_points;
         data.last_sequence_number = std::max(data.last_sequence_number, ev.sequence_number);
+        data.last_lat = ev.latitude;
+        data.last_lon = ev.longitude;
+        data.last_ts_ms = ev.timestamp;
     }
 
     boost::redis::request req;
-    const auto now_sec =
-        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 
     for (const auto& [id_str, data] : grouped)
     {
@@ -323,22 +220,23 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
 
         if (data.total_delta_meters > 0.0)
         {
-            req.push("HINCRBYFLOAT", active_key, "total_distance_meters", fmt::format("{:.2f}", data.total_delta_meters));
-            req.push("HINCRBYFLOAT", active_key, "distance_meters", fmt::format("{:.2f}", data.total_delta_meters));
+            req.push("HINCRBYFLOAT", active_key, "total_distance_meters",
+                     fmt::format("{:.2f}", data.total_delta_meters));
         }
         if (data.total_delta_points > 0)
         {
             req.push("HINCRBY", active_key, "total_points_count", std::to_string(data.total_delta_points));
-            req.push("HINCRBY", active_key, "points_count", std::to_string(data.total_delta_points));
         }
         if (data.last_sequence_number > 0)
         {
             req.push("HSET", active_key, "last_sequence_number", std::to_string(data.last_sequence_number));
         }
 
+        req.push("HSET", active_key, "last_lat", fmt::format("{:.7f}", data.last_lat), "last_lon",
+                 fmt::format("{:.7f}", data.last_lon), "last_point_ts_ms", std::to_string(data.last_ts_ms));
+
         req.push("EXPIRE", track_key, "86400");
         req.push("EXPIRE", active_key, "86400");
-        req.push("HSET", active_key, "last_ttl_refresh", std::to_string(now_sec));
     }
 
     boost::redis::generic_response resp;
@@ -346,7 +244,7 @@ net::awaitable<bool> RedisConnectionPool::FlushTrackBatchAsync(const std::vector
 
     const auto timeout = std::max(m_config.command_timeout * 2, std::chrono::milliseconds(500));
 
-    co_await conn->async_exec(req, resp, net::cancel_after(timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, timeout, ec);
 
     if (ec)
     {
@@ -376,8 +274,7 @@ net::awaitable<bool> RedisConnectionPool::SetWsTicketAsync(const std::string& ti
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -404,8 +301,7 @@ net::awaitable<std::optional<uint64_t>> RedisConnectionPool::ValidateWsTicketAsy
     boost::redis::response<std::optional<std::string>> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -445,8 +341,7 @@ net::awaitable<bool> RedisConnectionPool::PublishAsync(const std::string& channe
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -473,8 +368,7 @@ net::awaitable<bool> RedisConnectionPool::SetAsync(const std::string& key, const
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -485,9 +379,8 @@ net::awaitable<bool> RedisConnectionPool::SetAsync(const std::string& key, const
     co_return true;
 }
 
-net::awaitable<std::optional<bool>> RedisConnectionPool::SetNxAsync(const std::string& key,
-                                                                     const std::string& value,
-                                                                     std::chrono::seconds ttl)
+net::awaitable<std::optional<bool>> RedisConnectionPool::SetNxAsync(const std::string& key, const std::string& value,
+                                                                    std::chrono::seconds ttl)
 {
     auto conn = GetConnection();
     if (!conn)
@@ -501,8 +394,7 @@ net::awaitable<std::optional<bool>> RedisConnectionPool::SetNxAsync(const std::s
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -529,8 +421,7 @@ net::awaitable<std::optional<std::string>> RedisConnectionPool::GetAsync(const s
     boost::redis::response<std::optional<std::string>> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -560,8 +451,7 @@ net::awaitable<bool> RedisConnectionPool::DeleteAsync(const std::string& key)
     boost::redis::response<int> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -586,8 +476,7 @@ net::awaitable<bool> RedisConnectionPool::ExistsAsync(const std::string& key)
     boost::redis::response<int> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -617,8 +506,7 @@ net::awaitable<bool> RedisConnectionPool::HSetAsync(const std::string& key, cons
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     co_return !ec;
 }
@@ -659,8 +547,7 @@ net::awaitable<bool> RedisConnectionPool::HSetMultipleAsync(const std::string& k
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     co_return !ec;
 }
@@ -680,8 +567,7 @@ net::awaitable<std::optional<std::string>> RedisConnectionPool::HGetAsync(const 
     boost::redis::response<std::optional<std::string>> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -712,8 +598,7 @@ net::awaitable<std::unordered_map<std::string, std::string>> RedisConnectionPool
     boost::redis::response<std::vector<std::string>> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -733,6 +618,99 @@ net::awaitable<std::unordered_map<std::string, std::string>> RedisConnectionPool
     co_return result;
 }
 
+net::awaitable<std::vector<std::unordered_map<std::string, std::string>>>
+RedisConnectionPool::HGetAllManyAsync(const std::vector<std::string>& keys)
+{
+    std::vector<std::unordered_map<std::string, std::string>> results(keys.size());
+    if (keys.empty())
+    {
+        co_return results;
+    }
+
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return results;
+    }
+
+    boost::redis::request req;
+    for (const auto& key : keys)
+    {
+        req.push("HGETALL", key);
+    }
+
+    // Flat RESP3 tree: for each HGETALL a map node (depth 0) followed by its
+    // 2*aggregate_size key/value children (depth 1). An expired/missing key
+    // arrives as an empty array/map node.
+    boost::redis::generic_response resp;
+    boost::system::error_code ec;
+
+    const auto timeout = std::max(m_config.command_timeout * 2, std::chrono::milliseconds(500));
+    co_await ExecSerializedAsync(conn, req, resp, timeout, ec);
+
+    if (ec || !resp.has_value())
+    {
+        if (ec)
+        {
+            LOG_WARN("Pipelined HGETALL of {} keys failed: {}", keys.size(), ec.message());
+        }
+        co_return results;
+    }
+
+    const auto& nodes = resp.value();
+    std::size_t node = 0;
+    std::size_t key = 0;
+    while (node < nodes.size() && key < results.size())
+    {
+        const auto& head = nodes[node++];
+        if (head.depth != 0)
+        {
+            continue; // defensive: only top-level replies are expected
+        }
+        auto& fields = results[key++];
+        if (head.data_type == boost::redis::resp3::type::map)
+        {
+            for (std::size_t pair = 0; pair < head.aggregate_size && node + 1 < nodes.size(); ++pair, node += 2)
+            {
+                fields[std::move(nodes[node].value)] = std::move(nodes[node + 1].value);
+            }
+        }
+        else if (head.data_type == boost::redis::resp3::type::array)
+        {
+            for (std::size_t elem = 0; elem + 1 < head.aggregate_size && node + 1 < nodes.size(); elem += 2, node += 2)
+            {
+                fields[std::move(nodes[node].value)] = std::move(nodes[node + 1].value);
+            }
+        }
+        // null/error/other: key stays an empty map
+    }
+
+    co_return results;
+}
+
+net::awaitable<bool> RedisConnectionPool::ExecBatchAsync(const boost::redis::request& commands)
+{
+    auto conn = GetConnection();
+    if (!conn)
+    {
+        co_return false;
+    }
+
+    auto req = commands; // ExecSerializedAsync takes a mutable reference
+    boost::redis::generic_response resp;
+    boost::system::error_code ec;
+
+    const auto timeout = std::max(m_config.command_timeout * 2, std::chrono::milliseconds(500));
+    co_await ExecSerializedAsync(conn, req, resp, timeout, ec);
+
+    if (ec)
+    {
+        LOG_WARN("Redis batch exec failed: {}", ec.message());
+        co_return false;
+    }
+    co_return true;
+}
+
 net::awaitable<std::vector<std::string>> RedisConnectionPool::LRangeAsync(const std::string& key, int64_t start,
                                                                           int64_t stop)
 {
@@ -749,8 +727,7 @@ net::awaitable<std::vector<std::string>> RedisConnectionPool::LRangeAsync(const 
     boost::redis::response<std::vector<std::string>> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -767,8 +744,8 @@ net::awaitable<std::vector<std::string>> RedisConnectionPool::LRangeAsync(const 
 }
 
 net::awaitable<bool> RedisConnectionPool::RPushRangeAsync(const std::string& key,
-                                                           const std::vector<std::string>& values,
-                                                           std::optional<std::chrono::seconds> ttl)
+                                                          const std::vector<std::string>& values,
+                                                          std::optional<std::chrono::seconds> ttl)
 {
     if (values.empty())
     {
@@ -790,8 +767,7 @@ net::awaitable<bool> RedisConnectionPool::RPushRangeAsync(const std::string& key
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -802,7 +778,7 @@ net::awaitable<bool> RedisConnectionPool::RPushRangeAsync(const std::string& key
 }
 
 net::awaitable<int64_t> RedisConnectionPool::SAddAsync(const std::string& key, const std::string& member,
-                                                      std::optional<std::chrono::seconds> ttl)
+                                                       std::optional<std::chrono::seconds> ttl)
 {
     auto conn = GetConnection();
     if (!conn)
@@ -820,8 +796,7 @@ net::awaitable<int64_t> RedisConnectionPool::SAddAsync(const std::string& key, c
     boost::redis::generic_response resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -858,8 +833,7 @@ net::awaitable<std::vector<std::string>> RedisConnectionPool::SMembersAsync(cons
     boost::redis::response<std::vector<std::string>> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {
@@ -888,8 +862,7 @@ net::awaitable<int64_t> RedisConnectionPool::SCardAsync(const std::string& key)
     boost::redis::response<int64_t> resp;
     boost::system::error_code ec;
 
-    co_await conn->async_exec(req, resp,
-                              net::cancel_after(m_config.command_timeout, net::redirect_error(net::use_awaitable, ec)));
+    co_await ExecSerializedAsync(conn, req, resp, m_config.command_timeout, ec);
 
     if (ec)
     {

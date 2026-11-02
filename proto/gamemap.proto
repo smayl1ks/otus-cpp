@@ -5,10 +5,23 @@ package gamemap;
 import "common.proto";
 
 message SubscribeViewportRequest {
+  // BBox of the camera viewport (with margin). Kept on field numbers 1-4 for
+  // wire compatibility: zone-unaware servers handle it as before, zone-aware
+  // servers use it only as a fallback when zone_h3 is empty.
   double south_west_lng = 1;
   double south_west_lat = 2;
   double north_east_lng = 3;
   double north_east_lat = 4;
+
+  // Full desired subscription set: H3 res-6 zone indexes. Idempotent: the
+  // server diffs this set against the connection's current subscription.
+  // fixed64 on purpose — res-6 indexes start with 0x86.., so varint would
+  // always take 10 bytes.
+  repeated fixed64 zone_h3 = 5;
+
+  // Ask for a full hexagon snapshot of the subscribed area. Set on connect
+  // and when the zone set grows; zone-to-zone moves need no snapshot.
+  bool need_snapshot = 6;
 }
 
 message ViewportHexagon {

@@ -3,6 +3,8 @@
 #include "gameplay/territory_conquest/zone_channel_helper.hpp"
 #include "logger/logger.hpp"
 
+#include <map>
+
 namespace run::storage::redis
 {
 
@@ -89,14 +91,6 @@ void ShardedRedisManager::Stop()
             shard->Stop();
         }
     }
-}
-
-net::awaitable<bool> ShardedRedisManager::PushTrackEventAsync(DeferredTrackEvent event)
-{
-    const std::size_t shard_idx = (event.session_id[0] != '\0')
-                                      ? GetShardIndex(std::string_view(event.session_id))
-                                      : GetShardIndex(event.run_id);
-    co_return co_await m_shards[shard_idx]->PushTrackEventAsync(event);
 }
 
 net::awaitable<bool> ShardedRedisManager::PushTrackBatchAsync(std::vector<DeferredTrackEvent> events)
@@ -268,15 +262,6 @@ net::awaitable<bool> ShardedRedisManager::HSetMultipleAsync(
     co_return co_await m_shards[shard_idx]->GetRedisPool()->HSetMultipleAsync(key, flattened_fields, ttl);
 }
 
-void ShardedRedisManager::InvalidateTtl(uint64_t run_id)
-{
-    const std::size_t shard_idx = GetShardIndex(run_id);
-    if (shard_idx < m_shards.size() && m_shards[shard_idx] && m_shards[shard_idx]->GetRedisPool())
-    {
-        m_shards[shard_idx]->GetRedisPool()->InvalidateTtl(run_id);
-    }
-}
-
 net::awaitable<std::optional<std::string>> ShardedRedisManager::HGetAsync(const std::string& key,
                                                                           const std::string& field)
 {
@@ -288,6 +273,43 @@ net::awaitable<std::unordered_map<std::string, std::string>> ShardedRedisManager
 {
     const std::size_t shard_idx = GetShardIndex(key);
     co_return co_await m_shards[shard_idx]->GetRedisPool()->HGetAllAsync(key);
+}
+
+net::awaitable<std::vector<std::unordered_map<std::string, std::string>>>
+ShardedRedisManager::HGetAllManyAsync(const std::vector<std::string>& keys)
+{
+    std::vector<std::unordered_map<std::string, std::string>> results(keys.size());
+    if (keys.empty())
+    {
+        co_return results;
+    }
+
+    // Group keys per shard: one pipelined request per shard.
+    std::map<std::size_t, std::pair<std::vector<std::string>, std::vector<std::size_t>>> per_shard;
+    for (std::size_t i = 0; i < keys.size(); ++i)
+    {
+        auto& bucket = per_shard[GetShardIndex(keys[i])];
+        bucket.first.push_back(keys[i]);
+        bucket.second.push_back(i);
+    }
+
+    for (const auto& [shard_idx, bucket] : per_shard)
+    {
+        auto shard_results = co_await m_shards[shard_idx]->GetRedisPool()->HGetAllManyAsync(bucket.first);
+        for (std::size_t j = 0; j < bucket.second.size() && j < shard_results.size(); ++j)
+        {
+            results[bucket.second[j]] = std::move(shard_results[j]);
+        }
+    }
+
+    co_return results;
+}
+
+net::awaitable<bool> ShardedRedisManager::ExecBatchAsync(const std::string& route_key,
+                                                         const boost::redis::request& commands)
+{
+    const std::size_t shard_idx = GetShardIndex(route_key);
+    co_return co_await m_shards[shard_idx]->GetRedisPool()->ExecBatchAsync(commands);
 }
 
 net::awaitable<std::vector<std::string>> ShardedRedisManager::LRangeAsync(const std::string& key, int64_t start,

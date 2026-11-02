@@ -1,5 +1,6 @@
 #pragma once
 
+#include <boost/asio/any_io_executor.hpp>
 #include <memory>
 
 #include "config/config.hpp"
@@ -10,7 +11,7 @@
 #include "repository/iredis_repository.hpp"
 #include "repository/iuser_repository.hpp"
 #include "service/auth_service.hpp"
-#include "service/running/service_stack.hpp"
+#include "service/running/running_services.hpp"
 
 namespace run::server
 {
@@ -23,17 +24,20 @@ struct ServerDependencies
     std::shared_ptr<service::AuthService> auth_service;
     std::shared_ptr<controller::HttpController> http_controller;
     std::shared_ptr<controller::ProtobufController> protobuf_controller;
-    std::shared_ptr<service::running::ServiceStack> service_stack;
+    std::shared_ptr<service::running::RunningServices> running_services;
 };
 
 class ServerBootstrap
 {
 public:
-    static ServerDependencies BuildDependencies(context::WorkContext& work_context, const config::ServerConfig& config);
-
-private:
-    static bool InitializePostgresPool(const config::PostgresConfig& config);
-    static void SeedDevUserIfConfigured(repository::IUserRepository& repo, const config::DevConfig& config);
+    /// Builds the whole dependency graph. Throws when PostgreSQL is
+    /// unreachable: a node that cannot persist must not serve traffic — the
+    /// old silent fallback to in-memory stores rejected every login and kept
+    /// per-node isolated state until the next restart (audit S7). With
+    /// `restart: always` the container retries until the database is up.
+    static ServerDependencies BuildDependencies(context::WorkContext& work_context,
+                                                boost::asio::any_io_executor io_executor,
+                                                const config::ServerConfig& config);
 };
 
 } // namespace run::server
