@@ -50,8 +50,7 @@ TEST_F(LoopDetectorTest, DetectLoops_ValidLoop_DetectsCorrectInterval)
     {
         if (!track.empty())
         {
-            cum_dist +=
-                H3Service::GetDistanceMeters(track.back().coord.latitude, track.back().coord.longitude, lat, lon);
+            cum_dist += CalculateGCircleDistance(track.back().coord.latitude, track.back().coord.longitude, lat, lon);
         }
         track.push_back(
             TrackPoint{.hex = *m_h3_service.PointToH3(lat, lon), .coord = {lat, lon}, .cum_distance = cum_dist});

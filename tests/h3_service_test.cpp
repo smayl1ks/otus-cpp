@@ -212,23 +212,6 @@ TEST_F(H3ServiceTest, FromString_InvalidString_ReturnsNullopt)
     EXPECT_FALSE(H3Service::FromString("").has_value());
 }
 
-TEST_F(H3ServiceTest, GetDistanceMeters_SameCoordinates_ReturnsZero)
-{
-    const double distance = H3Service::GetDistanceMeters(kKazanLat, kKazanLng, kKazanLat, kKazanLng);
-
-    EXPECT_NEAR(distance, 0.0, 1e-6);
-}
-
-TEST_F(H3ServiceTest, GetDistanceMeters_KnownPoints_ReturnsAccurateDistance)
-{
-    const double stadium_lat = 55.7963;
-    const double stadium_lng = 49.0975;
-
-    const double distance = H3Service::GetDistanceMeters(kKazanLat, kKazanLng, stadium_lat, stadium_lng);
-
-    EXPECT_NEAR(distance, 581.4, 5.0);
-}
-
 TEST_F(H3ServiceTest, PolygonToCells_BasicSquare)
 {
     double sw_lat = 55.750, sw_lng = 37.600;

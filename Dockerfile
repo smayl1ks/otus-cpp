@@ -23,8 +23,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
-# Pinned to the vcpkg tool commit the working local build used; the
-# dependency versions themselves come from the baseline in vcpkg.json.
+
 RUN git clone https://github.com/microsoft/vcpkg.git && \
     git -C vcpkg checkout 4680a7f2c4b1455643732e07242d52d8fe01537a && \
     ./vcpkg/bootstrap-vcpkg.sh -disableMetrics

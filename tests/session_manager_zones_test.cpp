@@ -1,8 +1,3 @@
-// Zone routing index of SessionManager: full-set subscription semantics
-// (idempotent replace), delivery scoped to the subscribed zones, clean
-// removal. This index is what carries radar pings and hexagon capture
-// events to viewer sessions.
-
 #include "network/server/session_manager.hpp"
 #include "network/server/user_session.hpp"
 
@@ -117,12 +112,12 @@ TEST(SessionManagerZones, FullSetReplaceMovesSubscription)
     manager.AddSession(1, viewer);
     manager.UpdateViewportSubscription(viewer, {kZoneA});
 
-    // Idempotent full-set semantics: the same zone again is a no-op.
+    // Idempotent full-set semantics: the same zone again is a no-op
     manager.UpdateViewportSubscription(viewer, {kZoneA});
     manager.BroadcastToZone(kZoneA, "one");
     EXPECT_EQ(viewer->sent_count.load(), 1);
 
-    // Moving to another zone unsubscribes the old one.
+    // Moving to another zone unsubscribes the old one
     manager.UpdateViewportSubscription(viewer, {kZoneB});
     manager.BroadcastToZone(kZoneA, "old");
     EXPECT_EQ(viewer->sent_count.load(), 1);

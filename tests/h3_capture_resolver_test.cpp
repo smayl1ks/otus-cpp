@@ -8,12 +8,8 @@
 namespace run::gameplay::territory_conquest::testing
 {
 
-// Product thresholds (2026-11-01): GPS drift along a hex border must not
-// claim territory — three points and 75 m of in-hex distance are required
-// (defaults are intentionally strict; tests below override them).
 static_assert(H3CaptureConfig{}.min_points_per_hex == 3);
 static_assert(H3CaptureConfig{}.min_distance_per_hex_meters == 75.0);
-
 
 class H3CaptureResolverTest : public ::testing::Test
 {

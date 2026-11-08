@@ -95,7 +95,8 @@ TEST(LocationMapperTest, AnticheatStatus_RoundTrip)
     using DomainStatus = gameplay::anticheat::AnticheatStatus;
 
     EXPECT_EQ(LocationMapper::ToProto(DomainStatus::Ok), ::run::proto::telemetry::ANTICHEAT_STATUS_OK);
-    EXPECT_EQ(LocationMapper::ToProto(DomainStatus::MockDetected), ::run::proto::telemetry::ANTICHEAT_STATUS_MOCK_DETECTED);
+    EXPECT_EQ(LocationMapper::ToProto(DomainStatus::MockDetected),
+              ::run::proto::telemetry::ANTICHEAT_STATUS_MOCK_DETECTED);
     EXPECT_EQ(LocationMapper::ToProto(DomainStatus::TeleportationDetected),
               ::run::proto::telemetry::ANTICHEAT_STATUS_TELEPORTATION_DETECTED);
 

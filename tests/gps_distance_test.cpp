@@ -28,4 +28,14 @@ TEST(GpsDistanceTest, CalculateDistance_Symmetric)
     EXPECT_DOUBLE_EQ(CalculateGCircleDistance(p1, p2), CalculateGCircleDistance(p2, p1));
 }
 
+TEST(GpsDistanceTest, CalculateDistance_KnownCityPoints_Accurate)
+{
+    // Kazan center -> "Centralnyi" stadium: ~581 m
+    const GeoPoint kazan_center{55.7983, 49.1061};
+    const GeoPoint stadium{55.7963, 49.0975};
+
+    const double dist = CalculateGCircleDistance(kazan_center, stadium);
+    EXPECT_NEAR(dist, 581.4, 5.0);
+}
+
 } // namespace run::gameplay::testing
