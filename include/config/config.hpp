@@ -24,8 +24,9 @@ private:
     void LoadNetworkConfig(const po::variables_map& vm);
     void LoadLoggerConfig(const po::variables_map& vm);
     void LoadSSLConfig(const po::variables_map& vm);
-    void LoadStorageConfig(const po::variables_map& vm);
+    void LoadServerConfig(const po::variables_map& vm);
     void LoadDatabaseConfig(const po::variables_map& vm);
+    void LoadRedisConfig(const po::variables_map& vm);
     void LoadDevConfig(const po::variables_map& vm);
     void LoadAuthConfig(const po::variables_map& vm);
 
@@ -57,6 +58,11 @@ public:
     const PostgresConfig& GetPostgresSettings() const
     {
         return m_config_data.postgres;
+    }
+
+    const RedisConfig& GetRedisSettings() const
+    {
+        return m_config_data.redis;
     }
 
     const DevConfig& GetDevSettings() const

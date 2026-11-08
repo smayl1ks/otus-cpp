@@ -36,7 +36,7 @@ private:
     // POST /api/v1/auth/ws-ticket
     net::awaitable<http::response<http::string_body>> HandleWsTicket(http::request<http::string_body> request);
 
-    // GET /api/v1/users/me | /api/v1/users/{user_id}  (Bearer JWT required)
+    // GET /api/v1/users/me | /api/v1/users/{user_id} (Bearer JWT required)
     net::awaitable<http::response<http::string_body>> HandleProfile(uint64_t user_id, unsigned version);
 };
 

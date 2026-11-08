@@ -24,7 +24,6 @@ template <typename Stream>
 class WebSocketSession : public session::UserSession, public std::enable_shared_from_this<WebSocketSession<Stream>>
 {
 private:
-    // Thread-safe channel: Send() may be called from any executor without a spawn
     using WriteChannel = net::experimental::concurrent_channel<void(sys::error_code, std::string)>;
 
     static constexpr std::size_t kMaxFrameBytes = 256 * 1024; // largest legal Envelope ~60 KB
@@ -48,7 +47,7 @@ private:
     std::atomic<bool> m_closed{false};
     std::atomic<uint16_t> m_close_code{1000}; // set by RequestClose before the sentinel
     // Send() runs on arbitrary threads: both counters are atomic. Reset to 0
-    // on every successful enqueue, incremented on every overflow.
+    // on every successful enqueue, incremented on every overflow
     std::atomic<int> m_consecutive_overflows{0};
     std::atomic<int64_t> m_last_overflow_warn_ms{0};
 

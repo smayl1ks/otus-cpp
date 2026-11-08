@@ -15,16 +15,14 @@ namespace net = boost::asio;
 
 struct SessionServiceConfig
 {
-    uint32_t max_points_per_batch{100}; // must match GpsAntiCheatConfig::max_points_per_batch
+    uint32_t max_points_per_batch{100}; ///< Must match GpsAntiCheatConfig::max_points_per_batch
     uint32_t batch_interval_hint_ms{5'000};
 };
 
-// Session lifecycle: Start / GetActiveRun (reconnect sync) / Finish / Cancel.
+/// Manages run session lifecycle: Start, GetActiveRun (reconnect sync), Finish, and Cancel
 class RunSessionService
 {
 public:
-    // Shared outcome of the close pipeline; FinishRun/CancelRun map it onto
-    // their own proto reject reasons.
     struct CloseRunOutcome
     {
         enum class Status
@@ -32,7 +30,7 @@ public:
             kClosed,
             kAlreadyClosed,
             kNotFound,
-            kFailed, // finalize refused (concurrent close) or persistence failed
+            kFailed, // Finalize refused (concurrent close) or persistence failed
         };
 
         Status status{Status::kNotFound};
@@ -55,11 +53,9 @@ public:
     CancelRunAsync(int64_t user_id, const run::proto::session::CancelRunRequest& request);
 
 private:
-    // Finish and Cancel differ only in the close reason and the response
-    // shape — the pipeline (idempotency guard, ownership check, track fetch,
-    // finalize) lives here, once.
-    net::awaitable<CloseRunOutcome>
-    CloseRunAsync(int64_t user_id, const std::string& session_id, repository::RunCloseReason close_reason);
+    /// Unified close pipeline for both finish and cancel actions
+    net::awaitable<CloseRunOutcome> CloseRunAsync(int64_t user_id, const std::string& session_id,
+                                                  repository::RunCloseReason close_reason);
 
     std::shared_ptr<repository::IActiveRunStore> m_run_store;
     std::shared_ptr<repository::IRunHistoryRepository> m_run_history;

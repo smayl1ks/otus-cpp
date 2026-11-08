@@ -2,21 +2,32 @@
 #include "monitoring/metrics_collector.hpp"
 #include <chrono>
 
-namespace {
-const char* PayloadCaseToString(run::proto::Envelope::PayloadCase c)
+namespace
 {
-    switch (c)
+const char* PayloadCaseToString(run::proto::Envelope::PayloadCase payload)
+{
+    switch (payload)
     {
-    case run::proto::Envelope::PayloadCase::kLocationBatch: return "LocationBatch";
-    case run::proto::Envelope::PayloadCase::kStartRunRequest: return "StartRunRequest";
-    case run::proto::Envelope::PayloadCase::kGetActiveRunRequest: return "GetActiveRunRequest";
-    case run::proto::Envelope::PayloadCase::kFinishRunRequest: return "FinishRunRequest";
-    case run::proto::Envelope::PayloadCase::kCancelRunRequest: return "CancelRunRequest";
-    case run::proto::Envelope::PayloadCase::kOfflineRunInitRequest: return "OfflineRunInitRequest";
-    case run::proto::Envelope::PayloadCase::kOfflineRunChunkRequest: return "OfflineRunChunkRequest";
-    case run::proto::Envelope::PayloadCase::kOfflineRunCommitRequest: return "OfflineRunCommitRequest";
-    case run::proto::Envelope::PayloadCase::kSubscribeViewportRequest: return "SubscribeViewport";
-    default: return "other";
+    case run::proto::Envelope::PayloadCase::kLocationBatch:
+        return "LocationBatch";
+    case run::proto::Envelope::PayloadCase::kStartRunRequest:
+        return "StartRunRequest";
+    case run::proto::Envelope::PayloadCase::kGetActiveRunRequest:
+        return "GetActiveRunRequest";
+    case run::proto::Envelope::PayloadCase::kFinishRunRequest:
+        return "FinishRunRequest";
+    case run::proto::Envelope::PayloadCase::kCancelRunRequest:
+        return "CancelRunRequest";
+    case run::proto::Envelope::PayloadCase::kOfflineRunInitRequest:
+        return "OfflineRunInitRequest";
+    case run::proto::Envelope::PayloadCase::kOfflineRunChunkRequest:
+        return "OfflineRunChunkRequest";
+    case run::proto::Envelope::PayloadCase::kOfflineRunCommitRequest:
+        return "OfflineRunCommitRequest";
+    case run::proto::Envelope::PayloadCase::kSubscribeViewportRequest:
+        return "SubscribeViewport";
+    default:
+        return "other";
     }
 }
 } // namespace
@@ -42,13 +53,13 @@ DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::run
     using Case = run::proto::Envelope::PayloadCase;
     switch (request.payload_case())
     {
-    // --- Telemetry streaming -------------------------------------------
+    // Telemetry streaming
     case Case::kLocationBatch:
         *response.mutable_batch_process_response() =
             co_await services.telemetry_ingestor.ProcessBatchAsync(user_id, request.location_batch());
         break;
 
-    // --- Session lifecycle ----------------------------------------------
+    // Session lifecycle
     case Case::kStartRunRequest:
         *response.mutable_start_run_response() =
             co_await services.run_session_service.StartRunAsync(user_id, request.start_run_request());
@@ -65,7 +76,7 @@ DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::run
             co_await services.run_session_service.CancelRunAsync(user_id, request.cancel_run_request());
         break;
 
-    // --- Offline upload ---------------------------------------------------
+    // Offline upload
     case Case::kOfflineRunInitRequest:
         *response.mutable_offline_run_init_response() =
             co_await services.offline_upload_service.InitAsync(user_id, request.offline_run_init_request());
@@ -79,13 +90,6 @@ DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::run
             co_await services.offline_upload_service.CommitAsync(user_id, request.offline_run_commit_request());
         break;
 
-    // SubscribeViewport never reaches the dispatcher: the gateway fallback
-    // owns it (zone subscription + snapshot, which needs the hex cache).
-    // Reaching this switch means the fallback was not installed — drop the
-    // message instead of answering with a fake-empty OK that masks a broken
-    // deployment; the metric label above still records the attempt.
-
-    // --- Server -> client events and unknown payloads ----------------------
     case Case::kBatchProcessResponse:
     case Case::kStartRunResponse:
     case Case::kGetActiveRunResponse:

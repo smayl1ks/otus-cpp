@@ -17,8 +17,7 @@ RunMetrics RunValidator::Validate(std::span<const RunPoint> points) const noexce
     {
         const auto& prev = points[i - 1];
         const auto& curr = points[i];
-        metrics.total_distance_meters += territory_conquest::H3Service::GetDistanceMeters(
-            prev.coord.latitude, prev.coord.longitude, curr.coord.latitude, curr.coord.longitude);
+        metrics.total_distance_meters += CalculateGCircleDistance(prev.coord, curr.coord);
     }
 
     const int64_t start_time = points.front().RecordedAtMs();
@@ -41,8 +40,7 @@ RunMetrics RunValidator::Validate(std::span<const GeoPoint> points, int64_t dura
     {
         const auto& prev = points[i - 1];
         const auto& curr = points[i];
-        metrics.total_distance_meters += territory_conquest::H3Service::GetDistanceMeters(
-            prev.latitude, prev.longitude, curr.latitude, curr.longitude);
+        metrics.total_distance_meters += CalculateGCircleDistance(prev, curr);
     }
 
     metrics.duration_seconds = std::max<int64_t>(0, duration_seconds);

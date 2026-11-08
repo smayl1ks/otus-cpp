@@ -57,8 +57,7 @@ std::vector<H3IndexValue> BoundaryQualifier::QualifyBoundaryHexes(std::span<cons
         }
         curr_entry.point_count++;
 
-        const double seg_dist = H3Service::GetDistanceMeters(prev.coord.latitude, prev.coord.longitude,
-                                                             curr.coord.latitude, curr.coord.longitude);
+        const double seg_dist = CalculateGCircleDistance(prev.coord, curr.coord);
 
         if (prev.hex == curr.hex)
         {
@@ -161,7 +160,7 @@ std::vector<TrackPoint> H3CaptureResolver::BuildTrackFromAccessor(std::size_t po
         if (!track.empty())
         {
             const auto& prev = track.back();
-            const double seg_dist = H3Service::GetDistanceMeters(prev.coord.latitude, prev.coord.longitude, lat, lon);
+            const double seg_dist = CalculateGCircleDistance(prev.coord.latitude, prev.coord.longitude, lat, lon);
             cum_dist = prev.cum_distance + seg_dist;
             out_total_distance += seg_dist;
         }
@@ -234,7 +233,6 @@ CaptureResult H3CaptureResolver::ResolveTrack(const std::vector<TrackPoint>& tra
     result.claimed_hexes = BoundaryQualifier::QualifyBoundaryHexes(track, m_config.min_points_per_hex,
                                                                    m_config.min_distance_per_hex_meters);
 
-    // Closed loop detection and polygon rasterization
     if (m_config.enable_loop_capture)
     {
         const auto closed_loops = m_loop_detector.DetectLoops(track);

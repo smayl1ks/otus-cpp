@@ -34,8 +34,9 @@ ServerConfig::ServerConfig(int argc, char* argv[])
     LoadNetworkConfig(vm);
     LoadLoggerConfig(vm);
     LoadSSLConfig(vm);
-    LoadStorageConfig(vm);
+    LoadServerConfig(vm);
     LoadDatabaseConfig(vm);
+    LoadRedisConfig(vm);
     LoadDevConfig(vm);
     LoadAuthConfig(vm);
 
@@ -58,7 +59,6 @@ void ServerConfig::LoadNetworkConfig(const po::variables_map& vm)
     m_config_data.network.address = vm["network.address"].as<std::string>();
     m_config_data.network.https_port = vm["network.https.port"].as<unsigned short>();
     m_config_data.network.http_port = vm["network.http.port"].as<unsigned short>();
-    m_config_data.network.websocket_port = vm["network.websocket.port"].as<unsigned short>();
 }
 
 void ServerConfig::LoadLoggerConfig(const po::variables_map& vm)
@@ -79,7 +79,7 @@ void ServerConfig::LoadSSLConfig(const po::variables_map& vm)
     m_config_data.ssl.key_file = vm["ssl.key"].as<std::string>();
 }
 
-void ServerConfig::LoadStorageConfig(const po::variables_map& vm)
+void ServerConfig::LoadServerConfig(const po::variables_map& vm)
 {
     m_config_data.threads = vm["server.threads"].as<unsigned int>();
     m_config_data.tmp_dir = vm["server.tmp-dir"].as<std::string>();
@@ -99,6 +99,24 @@ void ServerConfig::LoadDatabaseConfig(const po::variables_map& vm)
         m_config_data.postgres.password = vm["postgres.password"].as<std::string>();
     if (vm.count("postgres.pool-size"))
         m_config_data.postgres.pool_size = vm["postgres.pool-size"].as<size_t>();
+}
+
+void ServerConfig::LoadRedisConfig(const po::variables_map& vm)
+{
+    if (vm.count("redis.num-shards"))
+        m_config_data.redis.num_shards = vm["redis.num-shards"].as<size_t>();
+    if (vm.count("redis.master-prefix"))
+        m_config_data.redis.master_prefix = vm["redis.master-prefix"].as<std::string>();
+    if (vm.count("redis.sentinels"))
+        m_config_data.redis.sentinels = vm["redis.sentinels"].as<std::string>();
+    if (vm.count("redis.host"))
+        m_config_data.redis.host = vm["redis.host"].as<std::string>();
+    if (vm.count("redis.port"))
+        m_config_data.redis.port = vm["redis.port"].as<unsigned short>();
+    if (vm.count("redis.password"))
+        m_config_data.redis.password = vm["redis.password"].as<std::string>();
+    if (vm.count("redis.connection-timeout-ms"))
+        m_config_data.redis.connection_timeout_ms = vm["redis.connection-timeout-ms"].as<size_t>();
 }
 
 void ServerConfig::LoadDevConfig(const po::variables_map& vm)

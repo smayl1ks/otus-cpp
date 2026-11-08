@@ -23,7 +23,6 @@ struct NetworkConfig
     std::string address;
     unsigned short https_port;
     unsigned short http_port;
-    unsigned short websocket_port;
 };
 
 struct SSLConfig
@@ -66,6 +65,22 @@ struct AuthConfig
     std::string root_password;
 };
 
+struct RedisConfig
+{
+    size_t num_shards{1};
+    std::string master_prefix{"master"}; // shard masters: master-0, master-1, ...
+    std::string sentinels;               // "host:port[,host:port]"; empty = direct mode
+    std::string host{"localhost"};
+    unsigned short port{6379};
+    std::string password;
+    size_t connection_timeout_ms{5000};
+
+    bool UseSentinel() const noexcept
+    {
+        return !sentinels.empty();
+    }
+};
+
 struct ConfigData
 {
     unsigned int threads;
@@ -74,6 +89,7 @@ struct ConfigData
     LoggerConfig logger;
     SSLConfig ssl;
     PostgresConfig postgres;
+    RedisConfig redis;
     DevConfig dev;
     AuthConfig auth;
 };

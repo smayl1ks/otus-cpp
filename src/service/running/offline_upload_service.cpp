@@ -75,7 +75,7 @@ OfflineUploadService::InitAsync(int64_t user_id, const run::proto::session::Offl
         co_return response;
     }
 
-    // The slot is shared with live runs: no upload while another run is active
+    // Slot is shared with live runs: no upload while another run is active
     if (!(co_await m_run_store->TryClaimUserSlotAsync(user_id, request.session_id())))
     {
         response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_ACTIVE_SESSION_EXISTS);

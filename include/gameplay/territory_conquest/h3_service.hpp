@@ -22,7 +22,7 @@ struct BoundingBox
 
 struct H3Config
 {
-    int default_resolution{9}; ///< H3 Resolution 9 (~100m edge length)
+    int default_resolution{9}; ///< H3 Resolution 9
 };
 
 class H3Service
@@ -50,7 +50,6 @@ public:
 
     std::vector<GeoCoordinates> GetHexagonBoundary(H3IndexValue cell) const noexcept;
     std::vector<H3IndexValue> PolygonToHexagons(const GeoPolygon& polygon) const noexcept;
-    static double GetDistanceMeters(double lat1, double lng1, double lat2, double lng2) noexcept;
 
     static std::string ToString(H3IndexValue cell);
     static std::optional<H3IndexValue> FromString(const std::string& h3_str) noexcept;

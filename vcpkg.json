@@ -1,26 +1,24 @@
 {
-    "name":  "outus-final-project",
-    "version-string":  "1.0.0",
-    "builtin-baseline":  "6d7bf7ef2193e2d1c5798a5ff8811d533104c861",
-    "dependencies":  [
-        "boost-asio",
-        "boost-beast",
-        "boost-container",
-        "boost-endian",
-        "boost-lockfree",
-        "boost-program-options",
-        "boost-redis",
-        "boost-system",
-        "boost-uuid",
-        "gtest",
-        "openssl",
-        "spdlog",
-        "h3",
-        "protobuf",
-        "libpqxx",
-        "libsodium",
-        "jwt-cpp",
-        "nlohmann-json",
-        "prometheus-cpp"
-    ]
+  "name": "outus-final-project",
+  "version-string": "1.0.0",
+  "builtin-baseline": "9a5dfef5d1a0438a7d24856a85bd60f309d355e9",
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-container",
+    "boost-program-options",
+    "boost-redis",
+    "boost-system",
+    "boost-uuid",
+    "gtest",
+    "openssl",
+    "spdlog",
+    "h3",
+    "protobuf",
+    "libpqxx",
+    "libsodium",
+    "jwt-cpp",
+    "nlohmann-json",
+    "prometheus-cpp"
+  ]
 }

@@ -13,7 +13,7 @@ namespace run::gameplay::anticheat
 {
 
 /**
- * @brief Domain-specific anti-cheat verification status.
+ * @brief Domain-specific anticheat verification status.
  */
 enum class AnticheatStatus : uint8_t
 {
@@ -49,7 +49,7 @@ constexpr std::string_view ToString(AnticheatStatus status) noexcept
 }
 
 /**
- * @brief Telemetry point received from client device for kinematic & anticheat verification.
+ * @brief Telemetry point received from client device.
  */
 struct TelemetryPoint
 {

@@ -21,9 +21,7 @@ double DistanceBetweenSpan(std::span<const TelemetryPoint> points)
     double total = 0.0;
     for (std::size_t i = 1; i < points.size(); ++i)
     {
-        total += gameplay::territory_conquest::H3Service::GetDistanceMeters(
-            points[i - 1].coord.latitude, points[i - 1].coord.longitude, points[i].coord.latitude,
-            points[i].coord.longitude);
+        total += gameplay::CalculateGCircleDistance(points[i - 1].coord, points[i].coord);
     }
     return total;
 }
@@ -81,11 +79,6 @@ TelemetryIngestor::ProcessBatchAsync(int64_t user_id, const run::proto::telemetr
         co_return ack;
     }
 
-    // Idempotency: same batch_uuid retried after a network failure must
-    // not be counted twice; the duplicate receives the same OK ack. The
-    // claim MUST precede the seam check: a resent batch whose first attempt
-    // already applied advances the seam anchor past its own points, and the
-    // seam would see dt <= 0 — the duplicate must short-circuit first.
     if (!(co_await m_run_store->ClaimBatchAsync(batch.session_id(), batch.batch_uuid())))
     {
         LOG_DEBUG("[ingestor] duplicate batch '{}' of session '{}'", batch.batch_uuid(), batch.session_id());
@@ -95,19 +88,13 @@ TelemetryIngestor::ProcessBatchAsync(int64_t user_id, const run::proto::telemetr
         co_return ack;
     }
 
-    // Inter-batch seam (S2): the batch is internally consistent, but the jump
-    // from the previously accepted point (seam anchor in run:active) must be
-    // plausible too — otherwise a cheat streams honest 10 m batches and
-    // teleports 2 km between them.
     if (record->last_point_ts_ms > 0 && !points.empty())
     {
-        const auto anchor = gameplay::anticheat::TelemetryPoint::Create(record->last_lat, record->last_lon,
-                                                                        record->last_point_ts_ms);
+        const auto anchor =
+            gameplay::anticheat::TelemetryPoint::Create(record->last_lat, record->last_lon, record->last_point_ts_ms);
         const auto seam = m_anticheat.ValidateSegment(anchor, points.front());
         if (seam != gameplay::anticheat::AnticheatStatus::Ok)
         {
-            // The claim must not outlive a rejected batch (audit §1.2):
-            // otherwise the client retry arrives as a "duplicate".
             co_await m_run_store->ReleaseClaimBatchAsync(batch.session_id(), batch.batch_uuid());
             LOG_INFO("[ingestor] batch '{}' of session '{}' rejected at seam: {}", batch.batch_uuid(),
                      batch.session_id(), gameplay::anticheat::ToString(seam));
@@ -128,10 +115,6 @@ TelemetryIngestor::ProcessBatchAsync(int64_t user_id, const run::proto::telemetr
         co_return ack;
     }
 
-    // Ack fields are derived from the pre-batch record plus the deltas this
-    // batch applied: a re-read after append costs one more round trip per
-    // batch and races with a concurrent batch of the same session (§3.1).
-    // On any append failure the retry path re-claims, so totals stay honest.
     ack.set_accepted_points_count(static_cast<int32_t>(points.size()));
     ack.set_total_distance_meters(record->total_distance_meters + delta_meters);
     ack.set_total_points_count(record->total_points_count + static_cast<int32_t>(points.size()));

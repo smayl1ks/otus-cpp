@@ -1,3 +1,3 @@
-target_sources(${PROJECT_NAME}_lib PRIVATE
+target_sources(${PROJECT_NAME}_core PRIVATE
     logger.cpp
 )

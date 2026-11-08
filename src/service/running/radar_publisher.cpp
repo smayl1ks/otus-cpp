@@ -55,13 +55,7 @@ RadarPublisher::PublishIfNeededAsync(int64_t user_id, const repository::ActiveRu
             ? fmt::format("{}:zone:{:x}:radar:public", m_config.city_prefix, *hex)
             : fmt::format("{}:zone:{:x}:radar:team:{}", m_config.city_prefix, *hex, run.team_id);
 
-    // Fire-and-forget, detached from the ack path. Radar publish is the only
-    // unbounded await in the batch pipeline (RedisPublisher::PublishAsync has
-    // no per-command timeout by design): a wedged pub/sub connection would
-    // park this coroutine forever, and with it the session's ReadLoop —
-    // no ack, no timeout, no RemoveSession (disembodied sessions, 2026-11-01:
-    // 114 sessions for 25 users). Radar is lossy by design: spawn with
-    // copied data and return to the caller immediately.
+    // Fire-and-forget, detached from the ack path
     auto transport = m_transport;
     net::co_spawn(
         co_await net::this_coro::executor,

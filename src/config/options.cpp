@@ -16,6 +16,7 @@ void ConfigOptions::SetOptions()
     SetCommonOptions();
     SetLoggerOptions();
     SetDatabaseOptions();
+    SetRedisOptions();
     SetDevOptions();
     SetAuthOptions();
     SetEnvMapping();
@@ -37,6 +38,25 @@ void ConfigOptions::SetDatabaseOptions()
         ("postgres.pool-size", po::value<size_t>()->default_value(g_DefaultPostgresPoolSize), "PostgreSQL connection pool size (0 = auto)");
 }
 
+void ConfigOptions::SetRedisOptions()
+{
+    m_redis_options.add_options()
+        ("redis.num-shards", po::value<size_t>()->default_value(g_DefaultRedisNumShards),
+         "Number of Redis shards (fleet size)")
+        ("redis.master-prefix", po::value<std::string>()->default_value(g_DefaultRedisMasterPrefix),
+         "Sentinel master name prefix (master-0, master-1, ...)")
+        ("redis.sentinels", po::value<std::string>()->default_value(g_DefaultRedisSentinels),
+         "Comma-separated sentinel list host:port[,host:port]; empty = direct mode")
+        ("redis.host", po::value<std::string>()->default_value(g_DefaultRedisHost),
+         "Redis host for direct mode (used when sentinels is empty)")
+        ("redis.port", po::value<unsigned short>()->default_value(g_DefaultRedisPort),
+         "Redis port for direct mode")
+        ("redis.password", po::value<std::string>()->default_value(g_DefaultRedisPassword),
+         "Redis password (empty = no auth)")
+        ("redis.connection-timeout-ms", po::value<size_t>()->default_value(g_DefaultRedisConnectionTimeoutMs),
+         "Redis connection timeout in milliseconds");
+}
+
 void ConfigOptions::SetDevOptions()
 {
     m_dev_options.add_options()
@@ -56,6 +76,7 @@ void ConfigOptions::ParseEnvironment()
     env_opts.add(m_common_options)
             .add(m_logger_options)
             .add(m_database_options)
+            .add(m_redis_options)
             .add(m_dev_options)
             .add(m_auth_options)
             .add(m_environment_options);
@@ -68,6 +89,13 @@ void ConfigOptions::ParseEnvironment()
         {"POSTGRES_USER", "postgres.user"},
         {"POSTGRES_PASSWORD", "postgres.password"},
         {"POSTGRES_POOL_SIZE", "postgres.pool-size"},
+        {"REDIS_NUM_SHARDS", "redis.num-shards"},
+        {"REDIS_MASTER_NAME", "redis.master-prefix"},
+        {"REDIS_SENTINELS", "redis.sentinels"},
+        {"REDIS_HOST", "redis.host"},
+        {"REDIS_PORT", "redis.port"},
+        {"REDIS_PASSWORD", "redis.password"},
+        {"REDIS_CONNECTION_TIMEOUT_MS", "redis.connection-timeout-ms"},
         {"RUN_DEV_USERNAME", "dev.username"},
         {"RUN_DEV_PASSWORD", "dev.password"},
         {"JWT_ACCESS_SECRET", "auth.jwt-secret"},
@@ -118,8 +146,7 @@ void ConfigOptions::SetCommonOptions()
         "network.address", po::value<std::string>()->default_value(g_DefaultServerAddress), "Server bind address")(
         "network.https.port", po::value<unsigned short>()->default_value(g_DefaultHTTPSPort),
         "HTTPS port")("network.http.port", po::value<unsigned short>()->default_value(g_DefaultHTTPPort), "HTTP port")(
-        "network.websocket.port", po::value<unsigned short>()->default_value(g_DefaultWebSocketPort),
-        "Websocket port")("ssl.run-ssl", po::value<bool>()->default_value(g_SSLDefaultRunStatus),
+        "ssl.run-ssl", po::value<bool>()->default_value(g_SSLDefaultRunStatus),
                           "Enable SSL")("ssl.cert", po::value<std::string>()->default_value(g_DefaultSSLCertFile),
                                         "Directory for served ssl certificate file")(
         "ssl.key", po::value<std::string>()->default_value(g_DefaultSSLKeyFile), "Directory for served ssl key file");
@@ -157,6 +184,7 @@ void ConfigOptions::ParseCommandLine(int argc, char* argv[])
             .add(m_common_options)
             .add(m_logger_options)
             .add(m_database_options)
+            .add(m_redis_options)
             .add(m_dev_options)
             .add(m_auth_options);
 
@@ -190,6 +218,7 @@ void ConfigOptions::LoadConfigFile(std::string_view filename)
     config_options.add(m_common_options)
                   .add(m_logger_options)
                   .add(m_database_options)
+                  .add(m_redis_options)
                   .add(m_dev_options)
                   .add(m_auth_options);
 
@@ -254,6 +283,10 @@ void ConfigOptions::PrintHelp() const
     po::options_description db_header("Database Settings");
     db_header.add(m_database_options);
     visible_opts.add(db_header);
+
+    po::options_description redis_header("Redis Settings");
+    redis_header.add(m_redis_options);
+    visible_opts.add(redis_header);
 
     std::cout << visible_opts << std::endl;
 

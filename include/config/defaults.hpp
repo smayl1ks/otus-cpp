@@ -28,7 +28,6 @@ constexpr int g_DefaultThreads = 4;
 constexpr auto g_DefaultServerAddress = "0.0.0.0";
 constexpr unsigned short g_DefaultHTTPSPort = 8080;
 constexpr unsigned short g_DefaultHTTPPort = 8081;
-constexpr unsigned short g_DefaultWebSocketPort = 9090;
 
 constexpr auto g_LoggerDefaultLevel = "info";
 constexpr auto g_LoggerDefaultPattern = "[%Y-%m-%d %H:%M:%S.%f] [%l] %v";
@@ -42,5 +41,13 @@ constexpr auto g_DefaultPostgresDB = "postgres_db";
 constexpr auto g_DefaultPostgresUser = "postgres_user";
 constexpr auto g_DefaultPostgresPassword = "";
 constexpr size_t g_DefaultPostgresPoolSize = 0;
+
+constexpr size_t g_DefaultRedisNumShards = 1;
+constexpr auto g_DefaultRedisMasterPrefix = "master"; // shards: master-0, master-1, ...
+constexpr auto g_DefaultRedisSentinels = "";          // "host:port[,host:port]"
+constexpr auto g_DefaultRedisHost = "localhost";
+constexpr unsigned short g_DefaultRedisPort = 6379;
+constexpr auto g_DefaultRedisPassword = "";
+constexpr size_t g_DefaultRedisConnectionTimeoutMs = 5000;
 
 } // namespace config

@@ -45,16 +45,7 @@ target_compile_options(${PROJECT_NAME}_lib PRIVATE
 
 add_subdirectory(src)
 
-add_executable(${PROJECT_NAME} src/main.cpp)
-target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
-
-# Deployed binary name: systemd unit (service/runner.service.in) and the
-# Dockerfile expect /opt/runner/runner.
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME runner)
-
-# Tests
 enable_testing()
 add_subdirectory(tests)
 
-include(cmake/strip.cmake)
 include(cmake/install.cmake)

@@ -8,7 +8,7 @@ namespace run::repository
 namespace
 {
 
-User ParseUserRow(const pqxx::row& row)
+User ParseUserRow(const pqxx::row_ref& row)
 {
     User user;
     user.id = static_cast<uint64_t>(row["id"].as<int64_t>());

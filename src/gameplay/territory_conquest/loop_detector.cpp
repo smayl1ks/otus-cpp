@@ -62,8 +62,7 @@ bool LoopDetector::CanFormLoop(std::span<const TrackPoint> track, std::size_t st
     }
 
     // 2. Check straight-line closure distance between start and end points
-    const double closure_dist = H3Service::GetDistanceMeters(pt_start.coord.latitude, pt_start.coord.longitude,
-                                                             pt_end.coord.latitude, pt_end.coord.longitude);
+    const double closure_dist = CalculateGCircleDistance(pt_start.coord, pt_end.coord);
     if (!IsWithinClosureDistance(closure_dist))
     {
         return false;

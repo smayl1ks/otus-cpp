@@ -18,11 +18,8 @@ namespace run::gameplay::territory_conquest
 {
 
 /**
- * @brief Evaluates boundary H3 cell visits along a GPS trajectory according to docs/RUN_ROLES.md:
- *        - Minimum point count per cell (N >= min_points_per_hex)
- *        - Minimum distance traveled inside cell (D >= min_distance_per_hex_meters)
- *        - Boundary crossings split segment distance 50/50 between exiting and entering cells.
- *        - Results preserve the exact chronological order of first cell appearance.
+ * @brief Selects boundary H3 cells visited by the track.
+ *        Result preserves the order of each cell's first visit.
  */
 class BoundaryQualifier
 {

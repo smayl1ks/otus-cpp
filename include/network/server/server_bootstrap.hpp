@@ -12,6 +12,7 @@
 #include "repository/iuser_repository.hpp"
 #include "service/auth_service.hpp"
 #include "service/running/running_services.hpp"
+#include "storage/redis/sentinel_config.hpp"
 
 namespace run::server
 {
@@ -25,6 +26,8 @@ struct ServerDependencies
     std::shared_ptr<controller::HttpController> http_controller;
     std::shared_ptr<controller::ProtobufController> protobuf_controller;
     std::shared_ptr<service::running::RunningServices> running_services;
+    /// Fleet topology the redis adapters and the radar subscriber use.
+    run::redis::SentinelConfig redis_sentinel_config;
 };
 
 class ServerBootstrap

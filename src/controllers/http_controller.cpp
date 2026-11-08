@@ -14,6 +14,8 @@ namespace run::controller
 namespace
 {
 
+constexpr auto g_ServerName = "Run Server";
+
 using Response = http::response<http::string_body>;
 
 std::string_view PathOnly(std::string_view target)
@@ -25,7 +27,7 @@ std::string_view PathOnly(std::string_view target)
 Response MakeResponse(const http::request<http::string_body>& request, http::status status, const nlohmann::json& body)
 {
     Response response{status, request.version()};
-    response.set(http::field::server, "Run Server");
+    response.set(http::field::server, g_ServerName);
     response.set(http::field::content_type, "application/json");
     response.keep_alive(request.keep_alive());
     response.body() = body.dump();
@@ -36,7 +38,7 @@ Response MakeResponse(const http::request<http::string_body>& request, http::sta
 Response MakeError(http::status status, std::string_view message, unsigned version = 11)
 {
     Response response{status, version};
-    response.set(http::field::server, "Run Server");
+    response.set(http::field::server, g_ServerName);
     response.set(http::field::content_type, "application/json");
     response.body() = nlohmann::json{{"status", "error"}, {"message", message}}.dump();
     response.prepare_payload();
@@ -140,7 +142,7 @@ net::awaitable<http::response<http::string_body>> HttpController::HandleProfile(
     }
 
     Response response{http::status::ok, version};
-    response.set(http::field::server, "Run Server");
+    response.set(http::field::server, g_ServerName);
     response.set(http::field::content_type, "application/json");
     response.body() = nlohmann::json{{"status", "success"}, {"profile", profile}}.dump();
     response.prepare_payload();
@@ -152,7 +154,7 @@ HttpController::HandleRequest(http::request<http::string_body> request)
 {
     const std::string_view path = PathOnly(request.target());
 
-    // --- Public auth endpoints -------------------------------------------
+    // --- Public endpoints ---
     if (request.method() == http::verb::post && path == "/api/v1/auth/login")
     {
         const auto response = co_await HandleLogin(std::move(request));
@@ -166,24 +168,13 @@ HttpController::HandleRequest(http::request<http::string_body> request)
         co_return co_await HandleWsTicket(std::move(request));
     }
 
-    // --- Prometheus Metrics & Deployment checks -----------------------------
-    if (request.method() == http::verb::get && path == "/metrics")
-    {
-        http::response<http::string_body> response{http::status::ok, request.version()};
-        response.set(http::field::server, "Run Server");
-        response.set(http::field::content_type, "text/plain; version=0.0.4; charset=utf-8");
-        response.body() = monitoring::MetricsCollector::Instance().Collect();
-        response.prepare_payload();
-        monitoring::MetricsCollector::Instance().IncrementHttpRequests("GET", "/metrics", 200);
-        co_return response;
-    }
     if (request.method() == http::verb::get && path == "/api/v1/health")
     {
         monitoring::MetricsCollector::Instance().IncrementHttpRequests("GET", "/api/v1/health", 200);
         co_return MakeResponse(request, http::status::ok, {{"status", "ok"}});
     }
 
-    // --- Protected endpoints: Bearer JWT required from here on ---------------
+    // --- Protected endpoints ----
     std::optional<uint64_t> caller_id;
     if (const auto it = request.find(http::field::authorization); it != request.end())
     {
@@ -218,7 +209,7 @@ HttpController::HandleRequest(http::request<http::string_body> request)
         const auto hex_segment = path.substr(kHexPrefix.size(), path.size() - kHexPrefix.size() - strlen("/details"));
         if (const auto hex = ParseUint64(hex_segment); hex.has_value())
         {
-            // TODO(hexagon): real details from the hexagon repository (owner, score, history).
+            // TODO
             co_return MakeResponse(request, http::status::ok,
                                    {{"status", "success"},
                                     {"h3_index", *hex},
@@ -230,10 +221,10 @@ HttpController::HandleRequest(http::request<http::string_body> request)
         co_return MakeError(http::status::bad_request, "Invalid h3 index", request.version());
     }
 
-    // GET /api/v1/runs — run history page
+    // GET /api/v1/runs
     if (request.method() == http::verb::get && path == "/api/v1/runs")
     {
-        // TODO(runs): pagination over the runs table (POSTGRES plane is ready).
+        // TODO
         co_return MakeResponse(request, http::status::ok,
                                {{"status", "success"},
                                 {"user_id", *caller_id},

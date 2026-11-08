@@ -11,8 +11,7 @@ namespace net = boost::asio;
 namespace run::repository
 {
 
-// Key-value plane for short-lived credentials (WS tickets) and hot caches.
-// Production impl: RedisRepository (storage/redis/redis_repository.hpp).
+/// Key-value plane for short-lived credentials (WS tickets) and hot caches
 class IRedisRepository
 {
 public:

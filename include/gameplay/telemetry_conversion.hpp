@@ -1,10 +1,5 @@
 #pragma once
 
-// Conversion between the two domain point types: the persisted track point
-// (RunPoint) and the anticheat/telemetry point (TelemetryPoint). One
-// definition for the whole project — the finalizer used to keep a private
-// copy.
-
 #include "gameplay/anticheat/anticheat.hpp"
 #include "gameplay/workout_tracking/workout_session.hpp"
 

@@ -30,13 +30,11 @@ private:
 
 public:
     AuthService(std::shared_ptr<run::repository::IUserRepository> user_repository,
-                std::shared_ptr<run::repository::IRedisRepository> redis_repository, run::context::WorkContext& work_context)
+                std::shared_ptr<run::repository::IRedisRepository> redis_repository,
+                run::context::WorkContext& work_context)
         : m_user_repository(std::move(user_repository)), m_redis_repository(std::move(redis_repository)),
           m_work_context(work_context)
     {
-        // HS256 with an empty key signs/verifies "validly" for everyone —
-        // refuse to start instead (audit S9). The secret comes from
-        // JWT_ACCESS_SECRET / runner.cfg; a missing one is a deployment bug.
         if (config::ServerConfig::Get().GetJwtSecret().empty())
         {
             throw std::runtime_error("auth.jwt-secret is empty: set JWT_ACCESS_SECRET (or runner.cfg) "
@@ -49,8 +47,7 @@ public:
     net::awaitable<std::optional<std::string>> CreateWsTicketFromJwt(std::string_view bearer_token);
     net::awaitable<std::optional<uint64_t>> ValidateTempToken(const std::string& token);
 
-    /// Verifies an "Authorization: Bearer <JWT>" header value, returns the user id.
-    /// Accepts the raw header value (with or without the "Bearer " prefix).
+    /// Authorization: Bearer <JWT> header value, returns the user id
     net::awaitable<std::optional<uint64_t>> ValidateAccessToken(std::string_view bearer_token);
 };
 

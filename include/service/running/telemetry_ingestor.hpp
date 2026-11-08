@@ -13,9 +13,7 @@ namespace run::service::running
 
 namespace net = boost::asio;
 
-// Hot path of the whole backend: one call per telemetry batch. Contract:
-// never touches PostgreSQL, never blocks on radar, all-or-nothing batch
-// ingestion. Everything is keyed by session_id.
+/// Hot path: ingests one telemetry batch per call (memory / redis-only, non-blocking)
 class TelemetryIngestor
 {
 public:

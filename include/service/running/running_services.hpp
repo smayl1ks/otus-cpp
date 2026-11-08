@@ -20,9 +20,7 @@
 namespace run::service::running
 {
 
-// Storage and gameplay configuration the running services need, wired once
-// at the composition root (server bootstrap). Production implementations
-// (Redis / PostgreSQL) are injected here; the services never know which.
+/// Application dependencies wired at composition root
 struct RunningDeps
 {
     std::shared_ptr<repository::IActiveRunStore> active_run_store;
@@ -31,8 +29,7 @@ struct RunningDeps
     std::shared_ptr<repository::IHexMapCache> hex_map_cache;
     std::shared_ptr<repository::IUserRepository> user_repository;
 
-    // Blocking-worker pool for the CPU-heavy close phase (anticheat replay +
-    // H3 capture). Must outlive the services: Server owns the Context.
+    /// Worker pool for anticheat replay + H3 capture
     context::WorkContext* work_context{nullptr};
 
     gameplay::anticheat::GpsAntiCheatConfig anticheat;
@@ -43,21 +40,16 @@ struct RunningDeps
     UploadLimits uploads;
 };
 
-// Owns the running-domain service graph (telemetry ingest, session lifecycle,
-// offline upload, capture fan-out); the EnvelopeDispatcher takes it by
-// reference. Declaration order = dependency order (members must not be
-// reordered).
+/// Owns the running-domain service graph
 struct RunningServices
 {
     explicit RunningServices(const RunningDeps& deps)
-        : h3_service(std::make_shared<gameplay::territory_conquest::H3Service>()),
-          hex_map_cache(deps.hex_map_cache),
+        : h3_service(std::make_shared<gameplay::territory_conquest::H3Service>()), hex_map_cache(deps.hex_map_cache),
           capture_event_publisher(std::make_shared<network::mappers::CaptureEventPublisher>(deps.radar_transport)),
           radar_publisher(std::make_shared<RadarPublisher>(deps.radar_transport, h3_service, deps.radar)),
-          run_finalizer(std::make_shared<RunFinalizer>(deps.active_run_store, deps.history_repository,
-                                                       deps.work_context, deps.anticheat, deps.h3_capture,
-                                                       deps.validation, deps.hex_map_cache,
-                                                       capture_event_publisher, deps.user_repository)),
+          run_finalizer(std::make_shared<RunFinalizer>(
+              deps.active_run_store, deps.history_repository, deps.work_context, deps.anticheat, deps.h3_capture,
+              deps.validation, deps.hex_map_cache, capture_event_publisher, deps.user_repository)),
           telemetry_ingestor(deps.active_run_store, radar_publisher, deps.anticheat),
           run_session_service(deps.active_run_store, deps.history_repository, run_finalizer, deps.sessions),
           offline_upload_service(deps.active_run_store, deps.history_repository, run_finalizer, deps.uploads)

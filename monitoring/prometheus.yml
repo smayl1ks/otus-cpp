@@ -7,13 +7,13 @@ scrape_configs:
   - job_name: 'runner_backend'
     metrics_path: '/metrics'
     static_configs:
-      - targets: ['cpp_node_1:9100']
+      - targets: ['runner_1:9100']
         labels:
-          node: 'cpp_node_1'
+          node: 'runner_1'
           app: 'runner'
-      - targets: ['cpp_node_2:9100']
+      - targets: ['runner_2:9100']
         labels:
-          node: 'cpp_node_2'
+          node: 'runner_2'
           app: 'runner'
 
   # Prometheus self-monitoring

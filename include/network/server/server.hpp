@@ -22,7 +22,7 @@
 
 #include "service/auth_service.hpp"
 #include "service/running/running_services.hpp"
-#include "storage/redis/redis_pub_sub_worker.hpp"
+#include "storage/redis/fleet_subscriber.hpp"
 
 namespace run::server
 {
@@ -65,7 +65,7 @@ private:
 
     std::shared_ptr<service::running::RunningServices> m_running_services;
     std::shared_ptr<service::AuthService> m_auth_service;
-    std::shared_ptr<storage::redis::RedisPubSubWorker> m_pubsub_worker;
+    std::unique_ptr<run::redis::FleetSubscriber> m_radar_subscriber;
 };
 
 } // namespace run::server

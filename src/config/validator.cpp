@@ -76,7 +76,6 @@ void ConfigValidator::DumpToLog() const
     LOG_INFO("Network address: {}", m_config_data.network.address);
     LOG_INFO("HTTP port: {}", m_config_data.network.http_port);
     LOG_INFO("HTTPS port: {}", m_config_data.network.https_port);
-    LOG_INFO("Websocket port: {}", m_config_data.network.websocket_port);
     LOG_INFO("SSL status: {}", m_config_data.ssl.ssl_run_status ? "ON" : "OFF");
 
     if (m_config_data.ssl.ssl_run_status)
@@ -88,6 +87,16 @@ void ConfigValidator::DumpToLog() const
     LOG_INFO("Postgres host: {}:{}", m_config_data.postgres.host, m_config_data.postgres.port);
     LOG_INFO("Postgres db: {}", m_config_data.postgres.dbname);
     LOG_INFO("Postgres user: {}", m_config_data.postgres.user);
+
+    LOG_INFO("Redis shards: {}, mode: {}", m_config_data.redis.num_shards,
+             m_config_data.redis.UseSentinel() ? "sentinel" : "direct");
+    LOG_INFO("Redis sentinel list: '{}'", m_config_data.redis.sentinels);
+    LOG_INFO("Redis master prefix: {}", m_config_data.redis.master_prefix);
+    if (!m_config_data.redis.UseSentinel())
+    {
+        LOG_INFO("Redis direct address: {}:{}", m_config_data.redis.host, m_config_data.redis.port);
+    }
+    LOG_INFO("Redis connection timeout: {} ms", m_config_data.redis.connection_timeout_ms);
 
     LOG_INFO("Logger level: {}", m_config_data.logger.level);
     LOG_INFO("Logger pattern: {}", m_config_data.logger.pattern);

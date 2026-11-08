@@ -190,13 +190,6 @@ std::vector<H3IndexValue> H3Service::GetParentZones(const std::vector<H3IndexVal
     return std::vector<H3IndexValue>(unique_parents.begin(), unique_parents.end());
 }
 
-double H3Service::GetDistanceMeters(double lat1, double lng1, double lat2, double lng2) noexcept
-{
-    const LatLng a{degsToRads(lat1), degsToRads(lng1)};
-    const LatLng b{degsToRads(lat2), degsToRads(lng2)};
-    return greatCircleDistanceM(&a, &b);
-}
-
 std::vector<GeoCoordinates> H3Service::GetHexagonBoundary(H3IndexValue cell) const noexcept
 {
     if (!IsValid(cell))

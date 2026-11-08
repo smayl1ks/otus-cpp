@@ -24,6 +24,7 @@ private:
     po::options_description m_common_options;
     po::options_description m_logger_options;
     po::options_description m_database_options;
+    po::options_description m_redis_options;
     po::options_description m_dev_options;
     po::options_description m_auth_options;
     po::options_description m_environment_options;
@@ -37,6 +38,7 @@ private:
     void SetCommandLineOptions();
     void SetLoggerOptions();
     void SetDatabaseOptions();
+    void SetRedisOptions();
     void SetDevOptions();
     void SetAuthOptions();
     void SetEnvMapping();

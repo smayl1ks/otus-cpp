@@ -14,20 +14,15 @@ namespace run::service::running
 
 namespace net = boost::asio;
 
-// Offline upload flow: a run that finished entirely without connectivity is
-// uploaded in three phases over the same WS.
-//
-// Idempotency: Init resumes by session_id (returns already-accepted chunks),
-// Chunk dedups by (session_id, chunk_index), Commit replays the stored
-// RunSummary. Chunks may arrive out of order; the final verdict always
-// happens in RunFinalizer over the assembled track.
+/// Configuration limits for offline workout uploads
 struct UploadLimits
 {
-    uint32_t max_points_per_chunk{1'000}; // keeps a WS frame well under proxy limits
-    int32_t max_total_points{43'200};     // 12 h at 1 Hz (Tmax)
-    int64_t max_duration_seconds{43'200};
+    uint32_t max_points_per_chunk{1000};
+    int32_t max_total_points{43200}; ///< 12 hours at 1 Hz
+    int64_t max_duration_seconds{43200};
 };
 
+/// Handles offline workout uploads in three phases over WebSocket (Init, Chunk, Commit).
 class OfflineUploadService
 {
 public:
@@ -45,7 +40,6 @@ public:
     CommitAsync(int64_t user_id, const run::proto::session::OfflineRunCommitRequest& request);
 
 private:
-
     std::shared_ptr<repository::IActiveRunStore> m_run_store;
     std::shared_ptr<repository::IRunHistoryRepository> m_run_history;
     std::shared_ptr<RunFinalizer> m_finalizer;

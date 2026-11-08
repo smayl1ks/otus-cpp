@@ -1,3 +1,5 @@
+name: runner
+
 services:
   # --- REVERSE PROXY & LOAD BALANCER ---
   nginx:
@@ -5,8 +7,8 @@ services:
     container_name: run_nginx
     restart: always
     ports:
-      - "${NGINX_PORT}:80"
-      - "${NGINX_SSL_PORT}:443"
+      - "${NGINX_PORT:-80}:80"
+      - "${NGINX_SSL_PORT:-443}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./dist:/usr/share/nginx/html:ro
@@ -17,34 +19,38 @@ services:
     sysctls:
       - net.core.somaxconn=65535
     depends_on:
-      cpp_node_1:
+      runner_1:
         condition: service_healthy
-      cpp_node_2:
+      runner_2:
         condition: service_healthy
     networks:
       - app_network
 
-  # --- C++ INGEST NODE 1 ---
-  cpp_node_1:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  # --- APPLICATION NODES ---
+  runner_1:
+    image: ubuntu:24.04
     container_name: run_cpp_1
     restart: always
+    entrypoint: ["/opt/build/runner", "-c", "/etc/runner/runner.cfg"]
     env_file:
       - .env
     environment:
       - NODE_ID=node_1
-      - REDIS_PUBSUB_HOSTS=redis_pubsub_0:6379,redis_pubsub_1:6379
-      - RUN_NETWORK_HTTP_PORT=8080
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET in .env}
+      - REDIS_NUM_SHARDS=2
+      - REDIS_MASTER_NAME=master
+      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      - REDIS_PASSWORD=
+      - REDIS_CONNECTION_TIMEOUT_MS=2000
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - REDIS_HOST=redis
     volumes:
+      - ./build:/opt/build:ro
       - ./runner.cfg:/etc/runner/runner.cfg:ro
       - ./logs/node_1:/tmp/runner/logs
     healthcheck:
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      # runner.cfg: network.http.port=8081
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -52,36 +58,38 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      sentinel-1:
+        condition: service_started
+      sentinel-2:
+        condition: service_started
+      sentinel-3:
+        condition: service_started
     networks:
       - app_network
 
-  # --- C++ INGEST NODE 2 (Scalability Demo) ---
-  cpp_node_2:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  runner_2:
+    image: ubuntu:24.04
     container_name: run_cpp_2
     restart: always
+    entrypoint: ["/opt/build/runner", "-c", "/etc/runner/runner.cfg"]
     env_file:
       - .env
     environment:
       - NODE_ID=node_2
-      - REDIS_PUBSUB_HOSTS=redis_pubsub_0:6379,redis_pubsub_1:6379
-      - RUN_NETWORK_HTTP_PORT=8080
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET in .env}
+      - REDIS_NUM_SHARDS=2
+      - REDIS_MASTER_NAME=master
+      - REDIS_SENTINELS=sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      - REDIS_PASSWORD=
+      - REDIS_CONNECTION_TIMEOUT_MS=2000
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
-      - REDIS_HOST=redis
     volumes:
+      - ./build:/opt/build:ro
       - ./runner.cfg:/etc/runner/runner.cfg:ro
       - ./logs/node_2:/tmp/runner/logs
     healthcheck:
-      # Liveness at the TCP level: catches a live-but-deaf node (the app
-      # itself fail-fasts on PostgreSQL loss since 2026-11-01).
-      # CMD-SHELL would run /bin/sh (dash): /dev/tcp is a bash-only feature,
-      # so invoke bash explicitly — otherwise the check fails forever.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -89,101 +97,115 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      sentinel-1:
+        condition: service_started
+      sentinel-2:
+        condition: service_started
+      sentinel-3:
+        condition: service_started
     networks:
       - app_network
 
-  # --- REDIS ---
-  # --- 1. REDIS MASTER ---
-  redis:
+  # --- REDIS FLEET (2 shards, master + replica each) ----
+  master-0:
     image: redis:7-alpine
-    container_name: run_redis
+    container_name: test-redis-master-0
     restart: always
-    command: redis-server /usr/local/etc/redis/redis.conf
+    command: redis-server --port 6379 --protected-mode no
     ports:
-      - "6379:6379"
-    volumes:
-      - ./redis/master.conf:/usr/local/etc/redis/redis.conf:ro
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - "16379:6379" # manual redis-cli debugging only
     networks:
-      - app_network
-    
-  # --- 2. REDIS REPLICA ---
-  redis_replica:
+      app_network:
+        ipv4_address: 172.30.0.10
+
+  replica-0:
     image: redis:7-alpine
-    container_name: run_redis_replica
+    container_name: test-redis-replica-0
     restart: always
-    command: redis-server /usr/local/etc/redis/redis.conf
-    ports:
-      - "6380:6379"
-    volumes:
-      - ./redis/replica.conf:/usr/local/etc/redis/redis.conf:ro
-      - redis_replica_data:/data
+    command: redis-server --port 6379 --replicaof 172.30.0.10 6379 --protected-mode no
     depends_on:
-      redis:
-        condition: service_healthy
+      - master-0
     networks:
-      - app_network
+      app_network:
+        ipv4_address: 172.30.0.12
 
-  # --- 3. DEDICATED PUB/SUB FLEET (RADAR, CLIENT-SIDE CHANNEL SHARDING) ---
-  # Fire-and-forget broadcast bus for kazan:zone:* radar channels.
-  # Channels are sharded by hash(h3_zone) % N across the fleet;
-  # no persistence: pub/sub messages are ephemeral by design.
-  redis_pubsub_0:
+  master-1:
     image: redis:7-alpine
-    container_name: run_redis_pubsub_0
+    container_name: test-redis-master-1
     restart: always
-    command: redis-server /usr/local/etc/redis/pubsub.conf
+    command: redis-server --port 6381 --protected-mode no
     ports:
-      - "6381:6379"
-    volumes:
-      - ./redis/pubsub.conf:/usr/local/etc/redis/pubsub.conf:ro
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
+      - "16381:6381" # manual redis-cli debugging only
     networks:
-      - app_network
+      app_network:
+        ipv4_address: 172.30.0.11
 
-  redis_pubsub_1:
+  replica-1:
     image: redis:7-alpine
-    container_name: run_redis_pubsub_1
+    container_name: test-redis-replica-1
     restart: always
-    command: redis-server /usr/local/etc/redis/pubsub.conf
-    ports:
-      - "6382:6379"
-    volumes:
-      - ./redis/pubsub.conf:/usr/local/etc/redis/pubsub.conf:ro
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    networks:
-      - app_network
-
-  # --- 4. REDIS SENTINEL ---
-  redis_sentinel:
-    image: redis:7-alpine
-    container_name: run_redis_sentinel
-    restart: always
-    command: sh -c "cp /etc/redis/sentinel.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
-    ports:
-      - "26379:26379"
-    volumes:
-      - ./redis/sentinel.conf:/etc/redis/sentinel.conf:ro
+    command: redis-server --port 6381 --replicaof 172.30.0.11 6381 --protected-mode no
     depends_on:
-      redis:
-        condition: service_healthy
+      - master-1
     networks:
-      - app_network
+      app_network:
+        ipv4_address: 172.30.0.13
+
+  # --- REDIS SENTINELS (quorum 2 of 3) ---
+  sentinel-1:
+    image: redis:7-alpine
+    container_name: test-redis-sentinel-1
+    restart: always
+    # Sentinel rewrites its config at runtime -> copy to a writable location.
+    command: sh -c "cp /etc/redis-config/sentinel-1.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    volumes:
+      # Directory mount (not a file): Docker Desktop on WSL poisons file
+      # bind-mount staging after a VM restart ("not a directory" errors).
+      - ./redis:/etc/redis-config:ro
+    ports:
+      - "36379:26379"
+    depends_on:
+      - master-0
+      - master-1
+    networks:
+      app_network:
+        ipv4_address: 172.30.0.20
+
+  sentinel-2:
+    image: redis:7-alpine
+    container_name: test-redis-sentinel-2
+    restart: always
+    command: sh -c "cp /etc/redis-config/sentinel-2.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    volumes:
+      # Directory mount (not a file): Docker Desktop on WSL poisons file
+      # bind-mount staging after a VM restart ("not a directory" errors).
+      - ./redis:/etc/redis-config:ro
+    ports:
+      - "36380:26379"
+    depends_on:
+      - master-0
+      - master-1
+    networks:
+      app_network:
+        ipv4_address: 172.30.0.21
+
+  sentinel-3:
+    image: redis:7-alpine
+    container_name: test-redis-sentinel-3
+    restart: always
+    command: sh -c "cp /etc/redis-config/sentinel-3.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
+    volumes:
+      # Directory mount (not a file): Docker Desktop on WSL poisons file
+      # bind-mount staging after a VM restart ("not a directory" errors).
+      - ./redis:/etc/redis-config:ro
+    ports:
+      - "36381:26379"
+    depends_on:
+      - master-0
+      - master-1
+    networks:
+      app_network:
+        ipv4_address: 172.30.0.22
 
   # --- POSTGRESQL + POSTGIS (PERSISTENCE) ---
   postgres:
@@ -195,7 +217,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-postgres_user}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_password}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "${POSTGRES_PORT:-5434}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./docker/initdb:/docker-entrypoint-initdb.d:ro
@@ -213,10 +235,10 @@ services:
     container_name: run_prometheus
     restart: always
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring:/etc/prom-config:ro
       - prometheus_data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--config.file=/etc/prom-config/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
       - '--web.console.libraries=/usr/share/prometheus/console_libraries'
       - '--web.console.templates=/usr/share/prometheus/consoles'
@@ -247,10 +269,11 @@ services:
 volumes:
   postgres_data:
   grafana_data:
-  redis_data:
-  redis_replica_data:
   prometheus_data:
 
 networks:
   app_network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

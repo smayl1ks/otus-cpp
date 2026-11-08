@@ -65,11 +65,8 @@ RunSessionService::StartRunAsync(int64_t user_id, const run::proto::session::Sta
         co_return BuildResumeResponse(*existing, m_config);
     }
 
-    // One active run per user (atomic claim)
     if (!(co_await m_run_store->TryClaimUserSlotAsync(user_id, request.session_id())))
     {
-        // The slot is taken: if it is taken by this very session, the retry
-        // landed inside the claim -> InitActiveRun window — serve the resume.
         if (auto active = co_await m_run_store->GetActiveRunByUserAsync(user_id);
             active.has_value() && active->session_id == request.session_id())
         {
@@ -148,7 +145,6 @@ net::awaitable<RunSessionService::CloseRunOutcome>
 RunSessionService::CloseRunAsync(int64_t user_id, const std::string& session_id,
                                  repository::RunCloseReason close_reason)
 {
-    // Idempotent close: a retry after a lost ack returns the stored summary.
     if (auto stored = co_await m_run_store->GetRunSummaryAsync(session_id);
         stored.has_value() && stored->user_id == user_id)
     {

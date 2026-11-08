@@ -21,7 +21,7 @@ class HttpSession : public std::enable_shared_from_this<HttpSession<Stream>>
 {
 private:
     // Mirrors nginx client_max_body_size: the nodes are also reachable
-    // directly (bypassing nginx), so the limit cannot live only at the proxy.
+    // directly (bypassing nginx)
     static constexpr std::size_t kMaxRequestBodyBytes = 1024 * 1024;
 
     Stream m_stream;

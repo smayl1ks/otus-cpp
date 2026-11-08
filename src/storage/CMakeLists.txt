@@ -1,14 +1,3 @@
-target_sources(${PROJECT_NAME}_lib PRIVATE
-    redis/sentinel_config.cpp
-    redis/sentinel_monitor.cpp
-    redis/redis_connection_pool.cpp
-    redis/drain_worker.cpp
-    redis/resilient_redis_producer.cpp
-    redis/redis_pub_sub_worker.cpp
-    redis/redis_publisher.cpp
-    redis/sharded_redis_manager.cpp
-    redis/redis_active_run_store.cpp
-    redis/redis_repository.cpp
-    redis/redis_pub_sub_publisher.cpp
-    redis/redis_hex_map_cache.cpp
+target_sources(${PROJECT_NAME}_core PRIVATE
+    redis/redis_client.cpp
 )

@@ -14,8 +14,7 @@ namespace run::service::running
 
 namespace net = boost::asio;
 
-// Transport for live pings (Redis pub/sub in production, sharded by h3 zone
-// inside the implementation).
+/// Transport for live runner pings (sharded by H3 zone in implementation)
 struct IPubSubPublisher
 {
     virtual ~IPubSubPublisher() = default;
@@ -23,16 +22,14 @@ struct IPubSubPublisher
     virtual net::awaitable<bool> PublishAsync(const std::string& channel, const std::string& payload) = 0;
 };
 
-/// Live runner visibility: publishes at most one RadarPing per ingested batch,
-/// and only when the runner is actually online right now (fresh point,
-/// non-private visibility). Older points of an offline-replay session are
-/// filtered by the freshness window and never reach pub/sub.
+/// Configuration for live runner visibility on the radar
 struct RadarPublisherConfig
 {
     int64_t freshness_window_ms{15'000};
     std::string_view city_prefix{"kazan"};
 };
 
+/// Publishes live runner pings for active, online, non-private runs
 class RadarPublisher
 {
 public:
@@ -40,7 +37,7 @@ public:
                    std::shared_ptr<gameplay::territory_conquest::H3Service> h3_service,
                    RadarPublisherConfig config = {});
 
-    /// Best-effort: failures are logged, never propagated to the ingest path.
+    /// Best-effort publish (failures are logged, never blocking the ingest path)
     net::awaitable<void> PublishIfNeededAsync(int64_t user_id, const repository::ActiveRunRecord& run,
                                               std::span<const gameplay::anticheat::TelemetryPoint> batch_points,
                                               int64_t now_ms) const;

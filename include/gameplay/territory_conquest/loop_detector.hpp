@@ -42,7 +42,7 @@ struct LoopDetectorConfig
 };
 
 /**
- * @brief Algorithmic detector for closed topological loops along a runner's trajectory.
+ * @brief Algorithmic detector for closed topological loops.
  */
 class LoopDetector
 {

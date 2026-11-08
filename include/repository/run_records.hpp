@@ -9,9 +9,6 @@
 namespace run::repository
 {
 
-// Domain-level run attributes. Transport enums (proto VisibilityScope / RunMode)
-// are mapped at the network boundary (network/mappers/session_mapper.hpp).
-
 enum class RunMode
 {
     kOnline,
@@ -31,7 +28,6 @@ enum class RunCloseReason
     kCancelled
 };
 
-// Validation verdict mirroring proto RunValidationReason 1:1.
 enum class ValidationVerdict
 {
     kValid,
@@ -44,7 +40,7 @@ enum class ValidationVerdict
     kInvalidTimestamps
 };
 
-// Live session state (Redis plane: run:active:{session_id}).
+// Live session state (run:active:{session_id})
 struct ActiveRunRecord
 {
     std::string session_id;
@@ -55,21 +51,17 @@ struct ActiveRunRecord
     Visibility visibility{Visibility::kPrivate};
     int64_t started_at_ms{0};
 
-    // Accumulated ingestor progress, updated on every accepted batch.
+    // Accumulated ingestor progress, updated on every accepted batch
     double total_distance_meters{0.0};
     int32_t total_points_count{0};
     int64_t last_sequence_number{0};
 
-    // Last accepted point — the seam anchor for inter-batch anticheat checks
-    // (a jump from this point to the next batch's first point must be
-    // plausible). last_point_ts_ms == 0 means "no anchor yet" (fresh run).
     double last_lat{0.0};
     double last_lon{0.0};
     int64_t last_point_ts_ms{0};
 };
 
-// Immutable result of a closed run, kept in Redis for idempotent
-// finish/commit retries (run:finished:{session_id}, short TTL).
+// run:finished:{session_id}
 struct StoredRunSummary
 {
     std::string session_id;
@@ -95,7 +87,7 @@ struct StoredRunSummary
     int64_t finished_at_ms{0};
 };
 
-// Assembling state of an offline upload (Redis plane: run:upload:{session_id}).
+// run:upload:{session_id}
 struct UploadMetaRecord
 {
     std::string session_id;
@@ -111,7 +103,7 @@ struct UploadMetaRecord
     int32_t total_chunks{0};
 };
 
-// New history row (PostgreSQL plane: runs, status='active'), created at START.
+// New history row (PostgreSQL plane: runs, status='active'), created at START
 struct NewRunRecord
 {
     std::string session_id;

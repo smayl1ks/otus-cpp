@@ -1,9 +1,5 @@
 #pragma once
 
-// WS entry point: maps Envelope oneof payloads to service calls and back.
-// The ONLY place aware of the payload dispatch table; services speak domain
-// protos (session::/telemetry::) and never see the Envelope.
-
 #include "logger/logger.hpp"
 #include "service/running/running_services.hpp"
 #include "utils/time.hpp"
@@ -25,8 +21,6 @@ inline run::proto::Envelope MakeResponseEnvelope(const run::proto::Envelope& req
     return response;
 }
 
-/// user_id comes from the authenticated connection context (WS ticket), never
-/// from the payload. nullopt = no request payload / unknown message type.
 boost::asio::awaitable<std::optional<run::proto::Envelope>>
 DispatchAsync(int64_t user_id, const run::proto::Envelope& request, service::running::RunningServices& services);
 

@@ -49,7 +49,7 @@ public:
 
     void BroadcastToZone(uint64_t zone_h3_idx, const std::string& binary_envelope);
 
-    /// Graceful shutdown: flush + 1001 Going Away on every live session.
+    /// Graceful shutdown: flush + 1001 Going Away on every live session
     void CloseAllSessions();
     size_t GetActiveSessionsCount() const noexcept;
 };

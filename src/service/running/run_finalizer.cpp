@@ -23,10 +23,8 @@ using gameplay::anticheat::TelemetryPoint;
 using gameplay::workout_tracking::RunMetrics;
 using gameplay::workout_tracking::RunPoint;
 
-// Game balance placeholder: points credited per newly captured hex.
 constexpr uint32_t kPointsPerHex{10};
 
-// Fewer surviving points than this -> stored unscored (kInsufficientValidPoints).
 constexpr std::size_t kMinValidPoints{2};
 
 } // namespace
@@ -82,11 +80,8 @@ RunFinalizer::ComputedClose RunFinalizer::ComputeClose(const repository::ActiveR
     summary.started_at_ms = run.started_at_ms;
     summary.finished_at_ms = now_ms;
 
-    // Anticheat replay over the whole track: batch acceptance upstream does
-    // not spare the finalizer a second look — the closed run is judged as a
-    // whole, point by point AND segment by segment (S2: the ingestor checks
-    // only the first point of a batch against the seam anchor; here every
-    // consecutive pair of surviving points is re-validated).
+    // Anticheat replay: the ingestor checks only batch seams, here every
+    // consecutive pair of surviving points is re-validated
     std::vector<RunPoint>& valid_points = result.valid_points;
     valid_points.reserve(track.size());
     int64_t first_ts_ms = 0;
@@ -100,13 +95,10 @@ RunFinalizer::ComputedClose RunFinalizer::ComputeClose(const repository::ActiveR
         }
         if (!valid_points.empty() &&
             m_anticheat.ValidateSegment(gameplay::ToTelemetryPoint(valid_points.back()),
-                                        gameplay::ToTelemetryPoint(point)) !=
-                gameplay::anticheat::AnticheatStatus::Ok)
+                                        gameplay::ToTelemetryPoint(point)) != gameplay::anticheat::AnticheatStatus::Ok)
         {
-            // Teleport/jump against the last accepted point: drop the
-            // arriving point and keep the anchor — no distance is credited
-            // across the gap (capture and validation run on accepted points
-            // only).
+            // Teleport vs the last accepted point: drop it, keep the anchor,
+            // so no distance is credited across the gap
             continue;
         }
         if (valid_points.empty())
@@ -151,15 +143,18 @@ RunFinalizer::ComputedClose RunFinalizer::ComputeClose(const repository::ActiveR
         summary.duration_seconds = static_cast<uint32_t>(metrics.duration_seconds);
         thresholds_valid = metrics.is_valid;
     }
+
     if (summary.duration_seconds == 0 && last_ts_ms > first_ts_ms)
     {
         summary.duration_seconds = static_cast<uint32_t>((last_ts_ms - first_ts_ms) / 1000);
     }
+
     if (summary.is_valid && !thresholds_valid)
     {
         summary.verdict = ClassifyVerdict(metrics, m_run_validator.GetConfig());
         summary.is_valid = false;
     }
+
     if (close_reason == repository::RunCloseReason::kCancelled)
     {
         // Cancelled runs are stored but never scored
@@ -170,7 +165,7 @@ RunFinalizer::ComputedClose RunFinalizer::ComputeClose(const repository::ActiveR
     summary.hexagons_captured_count = static_cast<uint32_t>(captures.claimed_hexes.size());
 
     // Derived stats. Moving duration / pace refinement lands with the
-    // pause-aware metrics; placeholders keep the summary shape complete.
+    // pause-aware metrics; placeholders keep the summary shape complete
     summary.total_points_count = static_cast<int32_t>(valid_points.size());
     summary.moving_duration_seconds = summary.duration_seconds;
     summary.avg_pace_sec_per_km = summary.total_distance_meters > 1.0
@@ -193,14 +188,12 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
     LOG_INFO("[finalizer] closing session '{}' (user {}, reason: {}, track points: {})", run.session_id, run.user_id,
              close_reason == repository::RunCloseReason::kFinished ? "finished" : "cancelled", track.size());
 
-    // ---- claim: one closer per session -----------------------------------
     if (!(co_await m_run_store->TryClaimClosingAsync(run.session_id)))
     {
         LOG_INFO("[finalizer] session '{}' is already being closed by someone else", run.session_id);
         co_return std::nullopt;
     }
 
-    // ---- compute: anticheat + capture + validation, off the io threads ----
     ComputedClose computed;
     if (m_work_context != nullptr)
     {
@@ -219,9 +212,10 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
             static_cast<double>(computed.summary.hexagons_captured_count));
         monitoring::MetricsCollector::Instance().ObserveLatency(computed.capture_latency_us);
     }
+
     repository::StoredRunSummary& summary = computed.summary;
 
-    // ---- persist: PostgreSQL final transaction ----------------------------
+    // PostgreSQL final transaction
     if (!(co_await m_run_history->FinalizeRunAsync(summary, computed.valid_points, &computed.captured_hexes)))
     {
         LOG_ERROR("[finalizer] history persistence failed for session '{}', run stays open", run.session_id);
@@ -229,20 +223,18 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
         co_return std::nullopt;
     }
 
-    // ---- fan-out: map cache + capture events ------------------------------
+    // map cache + capture events
     if (!computed.captured_hexes.empty())
     {
         co_await FanOutCapturesAsync(run, summary, computed.captured_hexes, now_ms);
     }
 
-    // ---- cleanup: summary survives for idempotent retries -----------------
+    // cleanup: summary survives for idempotent retries
     if (!(co_await m_run_store->SaveRunSummaryAsync(summary)))
     {
-        // The run is closed in PostgreSQL already; only the retry marker is
-        // lost. Log loudly: until the summary TTL expires, a finish retry
-        // will report SESSION_NOT_FOUND instead of the stored summary.
         LOG_ERROR("[finalizer] failed to save summary marker for session '{}'", run.session_id);
     }
+
     co_await m_run_store->DropRunDataAsync(run.session_id, run.user_id);
 
     LOG_INFO("[finalizer] session '{}' closed: {} m, {} s, {} hexes, valid={}", run.session_id,
@@ -256,8 +248,6 @@ net::awaitable<void> RunFinalizer::FanOutCapturesAsync(const repository::ActiveR
                                                        const std::vector<repository::HexCaptureRecord>& captures,
                                                        int64_t now_ms)
 {
-    // Owner identity as observed by the users repository: falls back to a
-    // synthetic name when the row is missing or the repository is absent.
     std::string username;
     std::string color;
     if (m_users)
@@ -277,7 +267,7 @@ net::awaitable<void> RunFinalizer::FanOutCapturesAsync(const repository::ActiveR
         color = "#000000";
     }
 
-    // Map cache: group by parent zone, one pipeline per zone.
+    // Map cache: group by parent zone, one pipeline per zone
     if (m_hex_cache)
     {
         std::map<uint64_t, std::vector<repository::HexOwnershipRecord>> per_zone;
@@ -299,10 +289,7 @@ net::awaitable<void> RunFinalizer::FanOutCapturesAsync(const repository::ActiveR
         }
     }
 
-    // Capture events: one domain notice per hex; the transport builds the
-    // Envelope (the service layer stays proto-free). The persistence records
-    // carry the previous owner as observed inside the PG transaction — the
-    // source of truth for the fan-out.
+    // Capture events
     for (const auto& capture : captures)
     {
         const CaptureNotice notice{.h3_index = capture.h3_index,
@@ -314,17 +301,10 @@ net::awaitable<void> RunFinalizer::FanOutCapturesAsync(const repository::ActiveR
                                    .timestamp_ms = now_ms};
         if (m_capture_publisher)
         {
-            // Same detached fire-and-forget as the radar: a wedged pub/sub
-            // transport must not park the finalize dispatch (the capture
-            // event is a best-effort notification, losses are logged).
             auto publisher = m_capture_publisher;
             net::co_spawn(
-                co_await net::this_coro::executor,
-                [publisher, notice]() -> net::awaitable<void>
-                {
-                    co_await publisher->PublishAsync(notice);
-                },
-                net::detached);
+                co_await net::this_coro::executor, [publisher, notice]() -> net::awaitable<void>
+                { co_await publisher->PublishAsync(notice); }, net::detached);
         }
     }
 }
