@@ -6,7 +6,7 @@
 ./scripts/deploy.sh
 ```
 
-Скрипт получает образ бекенда (`ghcr.io/smayl1ks/otus-cpp/runner:latest`), если его - собирает локально.
+Скрипт получает образ бекенда (`ghcr.io/smayl1ks/otus-cpp/runner:latest`), если его нет - собирает локально.
 
 Затем поднимает весь стек: `docker compose up -d`.
 
