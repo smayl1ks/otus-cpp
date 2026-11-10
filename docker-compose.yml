@@ -28,10 +28,10 @@ services:
 
   # --- APPLICATION NODES ---
   runner_1:
-    image: ubuntu:24.04
+    image: ${RUNNER_IMAGE:-ghcr.io/smayl1ks/otus-cpp/runner:latest}
     container_name: run_cpp_1
     restart: always
-    entrypoint: ["/opt/build/runner", "-c", "/etc/runner/runner.cfg"]
+    entrypoint: ["/opt/runner/runner", "-c", "/etc/runner/runner.cfg"]
     env_file:
       - .env
     environment:
@@ -45,7 +45,6 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
     volumes:
-      - ./build:/opt/build:ro
       - ./runner.cfg:/etc/runner/runner.cfg:ro
       - ./logs/node_1:/tmp/runner/logs
     healthcheck:
@@ -68,10 +67,10 @@ services:
       - app_network
 
   runner_2:
-    image: ubuntu:24.04
+    image: ${RUNNER_IMAGE:-ghcr.io/smayl1ks/otus-cpp/runner:latest}
     container_name: run_cpp_2
     restart: always
-    entrypoint: ["/opt/build/runner", "-c", "/etc/runner/runner.cfg"]
+    entrypoint: ["/opt/runner/runner", "-c", "/etc/runner/runner.cfg"]
     env_file:
       - .env
     environment:
@@ -85,7 +84,6 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
     volumes:
-      - ./build:/opt/build:ro
       - ./runner.cfg:/etc/runner/runner.cfg:ro
       - ./logs/node_2:/tmp/runner/logs
     healthcheck:
@@ -109,7 +107,7 @@ services:
   # --- REDIS FLEET (2 shards, master + replica each) ----
   master-0:
     image: redis:7-alpine
-    container_name: test-redis-master-0
+    container_name: redis-master-0
     restart: always
     command: redis-server --port 6379 --protected-mode no
     ports:
@@ -120,7 +118,7 @@ services:
 
   replica-0:
     image: redis:7-alpine
-    container_name: test-redis-replica-0
+    container_name: redis-replica-0
     restart: always
     command: redis-server --port 6379 --replicaof 172.30.0.10 6379 --protected-mode no
     depends_on:
@@ -131,7 +129,7 @@ services:
 
   master-1:
     image: redis:7-alpine
-    container_name: test-redis-master-1
+    container_name: redis-master-1
     restart: always
     command: redis-server --port 6381 --protected-mode no
     ports:
@@ -142,7 +140,7 @@ services:
 
   replica-1:
     image: redis:7-alpine
-    container_name: test-redis-replica-1
+    container_name: redis-replica-1
     restart: always
     command: redis-server --port 6381 --replicaof 172.30.0.11 6381 --protected-mode no
     depends_on:
@@ -154,13 +152,11 @@ services:
   # --- REDIS SENTINELS (quorum 2 of 3) ---
   sentinel-1:
     image: redis:7-alpine
-    container_name: test-redis-sentinel-1
+    container_name: redis-sentinel-1
     restart: always
     # Sentinel rewrites its config at runtime -> copy to a writable location.
     command: sh -c "cp /etc/redis-config/sentinel-1.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
     volumes:
-      # Directory mount (not a file): Docker Desktop on WSL poisons file
-      # bind-mount staging after a VM restart ("not a directory" errors).
       - ./redis:/etc/redis-config:ro
     ports:
       - "36379:26379"
@@ -173,12 +169,10 @@ services:
 
   sentinel-2:
     image: redis:7-alpine
-    container_name: test-redis-sentinel-2
+    container_name: redis-sentinel-2
     restart: always
     command: sh -c "cp /etc/redis-config/sentinel-2.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
     volumes:
-      # Directory mount (not a file): Docker Desktop on WSL poisons file
-      # bind-mount staging after a VM restart ("not a directory" errors).
       - ./redis:/etc/redis-config:ro
     ports:
       - "36380:26379"
@@ -191,12 +185,10 @@ services:
 
   sentinel-3:
     image: redis:7-alpine
-    container_name: test-redis-sentinel-3
+    container_name: redis-sentinel-3
     restart: always
     command: sh -c "cp /etc/redis-config/sentinel-3.conf /tmp/sentinel.conf && redis-sentinel /tmp/sentinel.conf"
     volumes:
-      # Directory mount (not a file): Docker Desktop on WSL poisons file
-      # bind-mount staging after a VM restart ("not a directory" errors).
       - ./redis:/etc/redis-config:ro
     ports:
       - "36381:26379"
@@ -247,13 +239,13 @@ services:
     networks:
       - app_network
 
-  # --- GRAFANA (DASHBOARDS, PROVISIONED AUTOMATICALLY) ---
+  # --- GRAFANA (DASHBOARDS) ---
   grafana:
     image: grafana/grafana:11.4.0
     container_name: run_grafana
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "3500:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}

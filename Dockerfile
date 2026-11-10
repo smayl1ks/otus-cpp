@@ -15,9 +15,11 @@ RUN apt-get update && apt-get install -y \
     unzip \
     tar \
     pkg-config \
+    python3 \
     bison \
     flex \
     autoconf \
+    autoconf-archive \
     automake \
     libtool \
     && rm -rf /var/lib/apt/lists/*
@@ -25,17 +27,22 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /opt
 
 RUN git clone https://github.com/microsoft/vcpkg.git && \
-    git -C vcpkg checkout 4680a7f2c4b1455643732e07242d52d8fe01537a && \
+    git -C vcpkg checkout 9a5dfef5d1a0438a7d24856a85bd60f309d355e9 && \
     ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
 ENV VCPKG_ROOT=/opt/vcpkg
 
 WORKDIR /app
 
-COPY vcpkg.json vcpkg-configuration.json ./
-COPY vcpkg-overlay ./vcpkg-overlay
+COPY docker/tools/cmake-4.4.4-linux-x86_64.tar.gz /opt/vcpkg/downloads/cmake-4.4.4-linux-x86_64.tar.gz
 
-RUN ${VCPKG_ROOT}/vcpkg install --triplet x64-linux
+COPY vcpkg.json ./
+
+# Persistent BuildKit caches
+RUN --mount=type=cache,target=/opt/vcpkg/downloads,sharing=locked \
+    --mount=type=cache,target=/var/cache/vcpkg-archives,id=vcpkg-archives,sharing=locked \
+    X_VCPKG_BINARY_SOURCES="clear;files,/var/cache/vcpkg-archives,readwrite" \
+    ${VCPKG_ROOT}/vcpkg install --triplet x64-linux
 
 COPY . .
 
