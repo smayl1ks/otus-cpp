@@ -5,24 +5,12 @@ FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    ninja-build \
-    git \
-    curl \
-    zip \
-    unzip \
-    tar \
-    pkg-config \
-    python3 \
-    bison \
-    flex \
-    autoconf \
-    autoconf-archive \
-    automake \
-    libtool \
-    && rm -rf /var/lib/apt/lists/*
+RUN BUILDER_TOOLS="build-essential cmake ninja-build git curl zip unzip tar \
+    pkg-config python3 bison flex autoconf autoconf-archive automake libtool" && \
+    apt-get update && \
+    (apt-get install -y -o Acquire::Retries=5 ${BUILDER_TOOLS} || \
+     (apt-get update && apt-get install -y -o Acquire::Retries=5 ${BUILDER_TOOLS})) && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
 
@@ -62,10 +50,11 @@ FROM ubuntu:24.04 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libstdc++6 \
-    && rm -rf /var/lib/apt/lists/*
+RUN RUNTIME_TOOLS="ca-certificates libstdc++6" && \
+    apt-get update && \
+    (apt-get install -y -o Acquire::Retries=5 ${RUNTIME_TOOLS} || \
+     (apt-get update && apt-get install -y -o Acquire::Retries=5 ${RUNTIME_TOOLS})) && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
