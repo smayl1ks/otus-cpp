@@ -34,13 +34,15 @@ ENV VCPKG_ROOT=/opt/vcpkg
 
 WORKDIR /app
 
-COPY docker/tools/cmake-4.4.4-linux-x86_64.tar.gz /opt/vcpkg/downloads/cmake-4.4.4-linux-x86_64.tar.gz
-
 COPY vcpkg.json ./
 
 # Persistent BuildKit caches
 RUN --mount=type=cache,target=/opt/vcpkg/downloads,sharing=locked \
     --mount=type=cache,target=/var/cache/vcpkg-archives,id=vcpkg-archives,sharing=locked \
+    mkdir -p /opt/vcpkg/downloads && \
+    curl -fsSL --retry 10 --retry-all-errors --retry-delay 3 \
+        -o /opt/vcpkg/downloads/cmake-4.4.4-linux-x86_64.tar.gz \
+        https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-linux-x86_64.tar.gz && \
     X_VCPKG_BINARY_SOURCES="clear;files,/var/cache/vcpkg-archives,readwrite" \
     ${VCPKG_ROOT}/vcpkg install --triplet x64-linux
 
