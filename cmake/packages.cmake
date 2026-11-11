@@ -10,6 +10,8 @@ find_package(spdlog CONFIG REQUIRED)
 find_package(libpqxx CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(prometheus-cpp CONFIG REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
+find_package(benchmark CONFIG REQUIRED)
 
 set(PACKAGES_LINK_LIBRARIES
     Boost::program_options
@@ -29,4 +31,6 @@ set(PACKAGES_LINK_LIBRARIES
     nlohmann_json::nlohmann_json
     prometheus-cpp::core
     prometheus-cpp::pull
+    pugixml::pugixml
+    benchmark::benchmark
 )

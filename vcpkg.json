@@ -11,6 +11,7 @@
     "boost-system",
     "boost-uuid",
     "gtest",
+    "benchmark",
     "openssl",
     "spdlog",
     "h3",
@@ -19,6 +20,7 @@
     "libsodium",
     "jwt-cpp",
     "nlohmann-json",
-    "prometheus-cpp"
+    "prometheus-cpp",
+    "pugixml"
   ]
 }

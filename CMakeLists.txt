@@ -48,4 +48,9 @@ add_subdirectory(src)
 enable_testing()
 add_subdirectory(tests)
 
+option(BUILD_BENCHMARKS "Build gameplay micro-benchmarks" ON)
+if(BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
 include(cmake/install.cmake)
