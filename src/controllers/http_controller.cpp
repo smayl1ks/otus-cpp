@@ -150,6 +150,41 @@ net::awaitable<http::response<http::string_body>> HttpController::HandleProfile(
 }
 
 net::awaitable<http::response<http::string_body>>
+HttpController::HandleHexDetails(uint64_t h3_index, http::request<http::string_body>& request)
+{
+    const auto details = co_await m_hex_ownership_source->GetHexDetailsAsync(h3_index);
+    if (!details.has_value())
+    {
+        co_return MakeError(http::status::not_found, "Hexagon not found", request.version());
+    }
+
+    nlohmann::json runners = nlohmann::json::array();
+    for (const auto& runner : details->top_runners)
+    {
+        runners.push_back({{"user_id", runner.user_id},
+                           {"username", runner.username},
+                           {"player_color_hex", runner.player_color_hex},
+                           {"game_points", runner.game_points}});
+    }
+
+    nlohmann::json body = {
+        {"h3_index", details->h3_index}, {"top_score", details->top_score}, {"top_runners", std::move(runners)}};
+    if (details->owner_user_id.has_value())
+    {
+        body["owner_user_id"] = *details->owner_user_id;
+        body["owner_username"] = details->owner_username;
+        body["owner_color_hex"] = details->owner_color_hex;
+    }
+    else
+    {
+        body["owner_user_id"] = nullptr;
+        body["owner_username"] = nullptr;
+    }
+
+    co_return MakeSuccess(request, std::move(body));
+}
+
+net::awaitable<http::response<http::string_body>>
 HttpController::HandleRequest(http::request<http::string_body> request)
 {
     const std::string_view path = PathOnly(request.target());
@@ -209,14 +244,7 @@ HttpController::HandleRequest(http::request<http::string_body> request)
         const auto hex_segment = path.substr(kHexPrefix.size(), path.size() - kHexPrefix.size() - strlen("/details"));
         if (const auto hex = ParseUint64(hex_segment); hex.has_value())
         {
-            // TODO
-            co_return MakeResponse(request, http::status::ok,
-                                   {{"status", "success"},
-                                    {"h3_index", *hex},
-                                    {"owner_user_id", nullptr},
-                                    {"owner_username", nullptr},
-                                    {"top_score", nullptr},
-                                    {"note", "stub: hexagon details are not implemented yet"}});
+            co_return co_await HandleHexDetails(*hex, request);
         }
         co_return MakeError(http::status::bad_request, "Invalid h3 index", request.version());
     }

@@ -127,8 +127,9 @@ ServerDependencies ServerBootstrap::BuildDependencies(context::WorkContext& work
 
     // Map cache with PostgreSQL self-heal: snapshot holes are re-read from hexagons and written back
     const auto map_cache_h3 = std::make_shared<gameplay::territory_conquest::H3Service>();
+    const auto hex_ownership_source = std::make_shared<repository::PostgresHexOwnershipSource>(work_context);
     running_deps.hex_map_cache = std::make_shared<repository::RedisHexMapCache>(
-        redis_client, std::make_shared<repository::PostgresHexOwnershipSource>(work_context),
+        redis_client, hex_ownership_source,
         [map_cache_h3](uint64_t h3_index) { return map_cache_h3->GetParent(h3_index, 6); });
     deps.redis_sentinel_config = sentinel_config;
     LOG_INFO("Redis storage plane active ({} shard(s), Sentinel: {})", sentinel_config.num_shards,
@@ -137,7 +138,8 @@ ServerDependencies ServerBootstrap::BuildDependencies(context::WorkContext& work
     deps.auth_service =
         std::make_shared<service::AuthService>(deps.user_repository, deps.redis_repository, work_context);
 
-    deps.http_controller = std::make_shared<controller::HttpController>(deps.auth_service, deps.user_repository);
+    deps.http_controller =
+        std::make_shared<controller::HttpController>(deps.auth_service, deps.user_repository, hex_ownership_source);
 
     deps.protobuf_controller = std::make_shared<controller::ProtobufController>();
 

@@ -16,6 +16,8 @@ public:
     boost::asio::awaitable<std::vector<HexOwnershipRecord>>
     GetByHexIdsAsync(std::span<const uint64_t> h3_indexes) override;
 
+    boost::asio::awaitable<std::optional<HexDetailsRecord>> GetHexDetailsAsync(uint64_t h3_index) override;
+
 private:
     run::context::WorkContext& m_work_context;
 };
