@@ -5,5 +5,4 @@ target_sources(${PROJECT_NAME}_core PRIVATE
     running/run_finalizer.cpp
     running/run_session_service.cpp
     running/telemetry_ingestor.cpp
-    running/track_flush.cpp
 )

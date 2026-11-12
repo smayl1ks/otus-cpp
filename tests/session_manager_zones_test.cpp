@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -73,12 +74,23 @@ public:
     {
     }
 
+    std::optional<uint64_t> GetTeamId() const noexcept override
+    {
+        return m_team_id;
+    }
+
+    void SetTeamId(std::optional<uint64_t> team_id) noexcept override
+    {
+        m_team_id = team_id;
+    }
+
     std::atomic<int> sent_count{0};
     std::atomic<bool> closed{false};
     std::string last_payload;
 
 private:
     uint64_t m_id;
+    std::optional<uint64_t> m_team_id{std::nullopt};
     int64_t m_last_frame_ms{0};
     std::unordered_set<uint64_t> m_subscribed_zones;
 };
@@ -142,4 +154,36 @@ TEST(SessionManagerZones, MultiZoneAndRemoval)
     manager.BroadcastToZone(kZoneB, "after-remove");
     EXPECT_EQ(viewer->sent_count.load(), 3); // no delivery after removal
     EXPECT_EQ(manager.GetActiveSessionsCount(), 0);
+}
+
+TEST(SessionManagerZones, BroadcastFilterTargetsTeamMembersOnly)
+{
+    SessionManager manager;
+    auto member = std::make_shared<FakeSession>(1);
+    auto outsider = std::make_shared<FakeSession>(2);
+    auto teamless = std::make_shared<FakeSession>(3);
+    member->SetTeamId(7);
+    outsider->SetTeamId(8);
+    // teamless stays nullopt: no team, no team radar
+
+    manager.AddSession(1, member);
+    manager.AddSession(2, outsider);
+    manager.AddSession(3, teamless);
+    manager.UpdateViewportSubscription(member, {kZoneA});
+    manager.UpdateViewportSubscription(outsider, {kZoneA});
+    manager.UpdateViewportSubscription(teamless, {kZoneA});
+
+    constexpr uint64_t kTeamId = 7;
+    manager.BroadcastToZone(kZoneA, "team-ping", [kTeamId](const UserSession& session)
+                            { return session.GetTeamId() == std::optional<uint64_t>(kTeamId); });
+
+    EXPECT_EQ(member->sent_count.load(), 1);   // same team: receives
+    EXPECT_EQ(outsider->sent_count.load(), 0); // other team: filtered out
+    EXPECT_EQ(teamless->sent_count.load(), 0); // no team: filtered out
+
+    // No filter = public broadcast: everyone receives
+    manager.BroadcastToZone(kZoneA, "public");
+    EXPECT_EQ(member->sent_count.load(), 2);
+    EXPECT_EQ(outsider->sent_count.load(), 1);
+    EXPECT_EQ(teamless->sent_count.load(), 1);
 }

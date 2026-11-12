@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "common.hpp"
@@ -43,6 +44,7 @@ private:
 
     uint64_t m_user_id{0};
     uint64_t m_active_run_id{0};
+    std::optional<uint64_t> m_team_id{std::nullopt};
     std::unordered_set<uint64_t> m_subscribed_zones;
     std::atomic<bool> m_closed{false};
     std::atomic<uint16_t> m_close_code{1000}; // set by RequestClose before the sentinel
@@ -276,6 +278,16 @@ public:
     void SetActiveRunId(uint64_t run_id) noexcept override
     {
         m_active_run_id = run_id;
+    }
+
+    std::optional<uint64_t> GetTeamId() const noexcept override
+    {
+        return m_team_id;
+    }
+
+    void SetTeamId(std::optional<uint64_t> team_id) noexcept override
+    {
+        m_team_id = team_id;
     }
 };
 

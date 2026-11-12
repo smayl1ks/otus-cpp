@@ -164,6 +164,13 @@ RunFinalizer::ComputedClose RunFinalizer::ComputeClose(const repository::ActiveR
     summary.claimed_hexes = captures.claimed_hexes;
     summary.hexagons_captured_count = static_cast<uint32_t>(captures.claimed_hexes.size());
 
+    if (!summary.is_valid)
+    {
+        summary.claimed_hexes.clear();
+        summary.hexagons_captured_count = 0;
+        result.captured_hexes.clear();
+    }
+
     // Derived stats. Moving duration / pace refinement lands with the
     // pause-aware metrics; placeholders keep the summary shape complete
     summary.total_points_count = static_cast<int32_t>(valid_points.size());
@@ -223,8 +230,8 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
         co_return std::nullopt;
     }
 
-    // map cache + capture events
-    if (!computed.captured_hexes.empty())
+    // map cache + capture events (invalid runs carry no captures)
+    if (summary.is_valid && !computed.captured_hexes.empty())
     {
         co_await FanOutCapturesAsync(run, summary, computed.captured_hexes, now_ms);
     }
@@ -277,7 +284,10 @@ net::awaitable<void> RunFinalizer::FanOutCapturesAsync(const repository::ActiveR
             {
                 per_zone[*parent_zone].push_back(
                     repository::HexOwnershipRecord{capture.h3_index, static_cast<uint64_t>(run.user_id), username,
-                                                   color, static_cast<int32_t>(kPointsPerHex)});
+                                                   color,
+                                                   capture.top_score != 0
+                                                       ? capture.top_score
+                                                       : static_cast<int32_t>(kPointsPerHex)});
             }
         }
         for (const auto& [zone6, hexes] : per_zone)

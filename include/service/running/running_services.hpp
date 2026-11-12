@@ -52,7 +52,8 @@ struct RunningServices
               deps.validation, deps.hex_map_cache, capture_event_publisher, deps.user_repository)),
           telemetry_ingestor(deps.active_run_store, radar_publisher, deps.anticheat),
           run_session_service(deps.active_run_store, deps.history_repository, run_finalizer, deps.sessions),
-          offline_upload_service(deps.active_run_store, deps.history_repository, run_finalizer, deps.uploads)
+          offline_upload_service(deps.active_run_store, deps.history_repository, run_finalizer, deps.uploads),
+          user_repository(deps.user_repository)
     {
     }
 
@@ -61,6 +62,8 @@ struct RunningServices
     std::shared_ptr<ICaptureEventPublisher> capture_event_publisher;
     std::shared_ptr<RadarPublisher> radar_publisher;
     std::shared_ptr<RunFinalizer> run_finalizer;
+    // Profile source for confirmed team membership (radar fan-out filter)
+    std::shared_ptr<repository::IUserRepository> user_repository;
 
     TelemetryIngestor telemetry_ingestor;
     RunSessionService run_session_service;

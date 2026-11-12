@@ -27,14 +27,16 @@ public:
     boost::asio::awaitable<bool> InitActiveRunAsync(const ActiveRunRecord& record) override;
     boost::asio::awaitable<std::optional<ActiveRunRecord>> GetActiveRunAsync(const std::string& session_id) override;
     boost::asio::awaitable<std::optional<ActiveRunRecord>> GetActiveRunByUserAsync(int64_t user_id) override;
+    boost::asio::awaitable<void> TouchActiveRunAsync(int64_t user_id, const std::string& session_id) override;
 
     // Telemetry ingestion
     boost::asio::awaitable<bool> ClaimBatchAsync(const std::string& session_id, const std::string& batch_uuid) override;
     boost::asio::awaitable<void> ReleaseClaimBatchAsync(const std::string& session_id,
                                                         const std::string& batch_uuid) override;
-    boost::asio::awaitable<bool> AppendTrackBatchAsync(const std::string& session_id,
-                                                       std::span<const gameplay::workout_tracking::RunPoint> points,
-                                                       double delta_meters, int64_t sequence_number) override;
+    boost::asio::awaitable<std::optional<int64_t>>
+    AppendTrackBatchAsync(const std::string& session_id,
+                          std::span<const gameplay::workout_tracking::RunPoint> points,
+                          double delta_meters, int64_t sequence_number) override;
     boost::asio::awaitable<std::vector<gameplay::workout_tracking::RunPoint>>
     GetTrackAsync(const std::string& session_id) override;
 

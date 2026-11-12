@@ -1,9 +1,10 @@
 #pragma once
 
-#include <iostream>
+#include <functional>
 #include <memory>
 #include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -47,7 +48,10 @@ public:
 
     void UpdateViewportSubscription(SessionPtr session, const std::vector<uint64_t>& new_h3_zones);
 
-    void BroadcastToZone(uint64_t zone_h3_idx, const std::string& binary_envelope);
+    /// Broadcasts to every session subscribed to the zone; an empty filter
+    /// targets all subscribers (team radar passes a membership predicate)
+    void BroadcastToZone(uint64_t zone_h3_idx, const std::string& binary_envelope,
+                         std::function<bool(const session::UserSession&)> filter = {});
 
     /// Graceful shutdown: flush + 1001 Going Away on every live session
     void CloseAllSessions();

@@ -63,6 +63,7 @@ TelemetryIngestor::ProcessBatchAsync(int64_t user_id, const run::proto::telemetr
     if (batch.state() == run::proto::telemetry::RUNNING_STATE_PAUSED && batch.points().empty())
     {
         LOG_DEBUG("[ingestor] heartbeat for session '{}'", batch.session_id());
+        co_await m_run_store->TouchActiveRunAsync(record->user_id, batch.session_id());
         ack.set_total_distance_meters(record->total_distance_meters);
         ack.set_total_points_count(record->total_points_count);
         ack.set_last_sequence_number(record->last_sequence_number);
@@ -103,15 +104,37 @@ TelemetryIngestor::ProcessBatchAsync(int64_t user_id, const run::proto::telemetr
         }
     }
 
-    const double delta_meters = DistanceBetweenSpan(points);
+    double delta_meters = DistanceBetweenSpan(points);
+    if (record->last_point_ts_ms > 0)
+    {
+        // Inter-batch seam: the segment from the last stored point to the first
+        // new one (single-point batches would otherwise credit zero meters).
+        // Counted exactly once: a replay returns applied == 0 and acks from the
+        // stored record without adding the seam again
+        const auto anchor =
+            gameplay::anticheat::TelemetryPoint::Create(record->last_lat, record->last_lon, record->last_point_ts_ms);
+        delta_meters += gameplay::CalculateGCircleDistance(anchor.coord, points.front().coord);
+    }
     const std::vector<RunPoint> track_points =
         network::mappers::LocationMapper::ToRunPoints(record->server_run_id, points, record->total_points_count);
-    if (!(co_await m_run_store->AppendTrackBatchAsync(batch.session_id(), track_points, delta_meters,
-                                                      batch.sequence_number())))
+    const auto applied = co_await m_run_store->AppendTrackBatchAsync(batch.session_id(), track_points, delta_meters,
+                                                                     batch.sequence_number());
+    if (!applied.has_value())
     {
         co_await m_run_store->ReleaseClaimBatchAsync(batch.session_id(), batch.batch_uuid());
         ack.set_system_status(common::SYSTEM_STATUS_INTERNAL_SERVER_ERROR);
         ack.set_anticheat_status(run::proto::telemetry::ANTICHEAT_STATUS_UNSPECIFIED);
+        co_return ack;
+    }
+    if (*applied == 0)
+    {
+        // Replay of an already applied sequence (batch dedup claim may expire
+        // while the batch is in flight): ack as duplicate, totals from the record
+        LOG_DEBUG("[ingestor] stale sequence {} for session '{}'", batch.sequence_number(), batch.session_id());
+        ack.set_total_distance_meters(record->total_distance_meters);
+        ack.set_total_points_count(record->total_points_count);
+        ack.set_last_sequence_number(record->last_sequence_number);
+        co_await m_run_store->ReleaseClaimBatchAsync(batch.session_id(), batch.batch_uuid());
         co_return ack;
     }
 

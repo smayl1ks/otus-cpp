@@ -71,6 +71,15 @@ public:
         m_run_id = run_id;
     }
 
+    std::optional<uint64_t> GetTeamId() const noexcept override
+    {
+        return std::nullopt;
+    }
+
+    void SetTeamId(std::optional<uint64_t>) noexcept override
+    {
+    }
+
     bool IsClosed() const noexcept
     {
         return m_closed;

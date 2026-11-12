@@ -63,6 +63,16 @@ net::awaitable<void> MapController::HandleSubscribeViewport(const run::proto::En
         zones = m_services->h3_service->GetParentZones(cells, 6);
     }
 
+    // Refresh the confirmed team membership before (re)subscribing: radar
+    // fan-out filters team channels by it and never trusts the client
+    if (m_services->user_repository != nullptr)
+    {
+        if (auto user = co_await m_services->user_repository->FindById(session.GetId()); user.has_value())
+        {
+            session.SetTeamId(user->team_id);
+        }
+    }
+
     session.UpdateSubscribedZones(zones);
 
     auto response = run::server::MakeResponseEnvelope(envelope);

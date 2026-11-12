@@ -15,6 +15,9 @@ struct HexCaptureRecord
 {
     uint64_t h3_index{0};
     std::optional<int64_t> prev_owner_id;
+    /// Authoritative hex record after the capture (hexagons.top_score =
+    /// GREATEST(previous, run total)), read back via RETURNING
+    int32_t top_score{0};
 };
 
 /// PostgreSQL/PostGIS history repository interface managing run lifecycles and atomic finalization

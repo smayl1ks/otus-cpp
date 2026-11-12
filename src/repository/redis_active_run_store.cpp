@@ -19,6 +19,8 @@ namespace
 
 using gameplay::workout_tracking::RunPoint;
 
+constexpr auto g_RunTTLSeconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::hours(24));
+
 // Keys of one run share the "{session}" hash tag: one shard per run.
 std::string ActiveKey(const std::string& session_id)
 {
@@ -29,8 +31,6 @@ std::string TrackKey(const std::string& session_id)
 {
     return fmt::format("run:{{{}}}:track", session_id);
 }
-
-constexpr auto kRunTtl = std::chrono::hours(24);
 
 std::string ToString(double value)
 {
@@ -110,7 +110,7 @@ std::optional<RunPoint> ParseTrackPoint(std::string_view raw)
 boost::asio::awaitable<bool> RedisActiveRunStore::TryClaimUserSlotAsync(int64_t user_id, const std::string& session_id)
 {
     const std::string user_key = fmt::format("user:active_run:{}", user_id);
-    const auto claimed = co_await m_client->SetNxAsync(user_key, session_id, kRunTtl);
+    const auto claimed = co_await m_client->SetNxAsync(user_key, session_id, g_RunTTLSeconds);
 
     if (claimed.has_value() && *claimed)
     {
@@ -157,7 +157,7 @@ boost::asio::awaitable<bool> RedisActiveRunStore::InitActiveRunAsync(const Activ
     };
 
     co_await m_client->DeleteAsync(TrackKey(record.session_id));
-    co_return co_await m_client->HSetMultipleAsync(ActiveKey(record.session_id), fields, kRunTtl);
+    co_return co_await m_client->HSetMultipleAsync(ActiveKey(record.session_id), fields, g_RunTTLSeconds);
 }
 
 boost::asio::awaitable<std::optional<ActiveRunRecord>>
@@ -257,6 +257,32 @@ boost::asio::awaitable<std::optional<ActiveRunRecord>> RedisActiveRunStore::GetA
     co_return co_await GetActiveRunAsync(*session_id);
 }
 
+boost::asio::awaitable<void> RedisActiveRunStore::TouchActiveRunAsync(int64_t user_id, const std::string& session_id)
+{
+    if (session_id.empty())
+    {
+        co_return;
+    }
+
+    const std::string ttl = std::to_string(g_RunTTLSeconds.count());
+
+    // Session keys share the {session_id} hash tag
+    boost::redis::request session_commands;
+    session_commands.push("EXPIRE", ActiveKey(session_id), ttl);
+    session_commands.push("EXPIRE", TrackKey(session_id), ttl);
+    if (!(co_await m_client->ExecBatchAsync(ActiveKey(session_id), session_commands)))
+    {
+        LOG_WARN("[active_run_store] failed to refresh TTL of session '{}'", session_id);
+    }
+
+    boost::redis::request slot_commands;
+    slot_commands.push("EXPIRE", fmt::format("user:active_run:{}", user_id), ttl);
+    if (!(co_await m_client->ExecBatchAsync(fmt::format("user:active_run:{}", user_id), slot_commands)))
+    {
+        LOG_WARN("[active_run_store] failed to refresh TTL of the run slot for user {}", user_id);
+    }
+}
+
 // Telemetry ingestion
 boost::asio::awaitable<bool> RedisActiveRunStore::ClaimBatchAsync(const std::string& session_id,
                                                                   const std::string& batch_uuid)
@@ -281,36 +307,30 @@ boost::asio::awaitable<void> RedisActiveRunStore::ReleaseClaimBatchAsync(const s
     co_return;
 }
 
-boost::asio::awaitable<bool>
+boost::asio::awaitable<std::optional<int64_t>>
 RedisActiveRunStore::AppendTrackBatchAsync(const std::string& session_id,
                                            std::span<const gameplay::workout_tracking::RunPoint> points,
                                            double delta_meters, int64_t sequence_number)
 {
-    if (session_id.empty())
+    if (session_id.empty() || points.empty())
     {
-        co_return false;
-    }
-    if (points.empty())
-    {
-        co_return true;
+        co_return 0;
     }
 
-    const double delta_per_point = delta_meters / static_cast<double>(points.size());
+    // Batch-atomic rows: the replay gate and accumulators are keyed by
+    // batch-level scalars inside track_flush
     auto rows = nlohmann::json::array();
-    for (std::size_t i = 0; i < points.size(); ++i)
+    for (const auto& point : points)
     {
-        const bool last = i + 1 == points.size();
-        rows.push_back({last ? sequence_number : 0, fmt::format("{}", points[i].coord.latitude),
-                        fmt::format("{}", points[i].coord.longitude),
-                        fmt::format("{}", points[i].speed_ms.value_or(0.0f)), std::to_string(points[i].RecordedAtMs()),
-                        fmt::format("{:.2f}", delta_per_point), last ? static_cast<int32_t>(points.size()) : 0});
+        rows.push_back({fmt::format("{}", point.coord.latitude), fmt::format("{}", point.coord.longitude),
+                        fmt::format("{}", point.speed_ms.value_or(0.0f)), std::to_string(point.RecordedAtMs())});
     }
 
     const std::string track_key = TrackKey(session_id);
     const std::vector<std::string> keys{track_key, ActiveKey(session_id)};
-    const std::vector<std::string> args{rows.dump(), std::to_string(kRunTtl.count())};
-    const auto applied = co_await m_client->FcallAsync(track_key, "track_flush", keys, args);
-    co_return applied.has_value();
+    const std::vector<std::string> args{rows.dump(), std::to_string(sequence_number), std::to_string(points.size()),
+                                        fmt::format("{:.2f}", delta_meters), std::to_string(g_RunTTLSeconds.count())};
+    co_return co_await m_client->FcallAsync(track_key, "track_flush", keys, args);
 }
 
 boost::asio::awaitable<std::vector<gameplay::workout_tracking::RunPoint>>
@@ -395,7 +415,7 @@ boost::asio::awaitable<bool> RedisActiveRunStore::SaveRunSummaryAsync(const Stor
     };
 
     co_return co_await m_client->HSetMultipleAsync(fmt::format("run:{{{}}}:summary", summary.session_id), fields,
-                                                   kRunTtl);
+                                                   g_RunTTLSeconds);
 }
 
 boost::asio::awaitable<std::optional<StoredRunSummary>>
@@ -522,7 +542,7 @@ boost::asio::awaitable<bool> RedisActiveRunStore::InitUploadAsync(const UploadMe
 
     co_await m_client->DeleteAsync(fmt::format("run:{{{}}}:upload:chunks", meta.session_id));
     co_return co_await m_client->HSetMultipleAsync(fmt::format("run:{{{}}}:upload:meta", meta.session_id), fields,
-                                                   kRunTtl);
+                                                   g_RunTTLSeconds);
 }
 
 boost::asio::awaitable<std::optional<UploadMetaRecord>>
@@ -604,7 +624,7 @@ RedisActiveRunStore::PutUploadChunkAsync(const std::string& session_id, int32_t 
 
     const std::string chunk_key = fmt::format("run:{{{}}}:upload:chunk:{}", session_id, chunk_index);
     const std::string chunks_set_key = fmt::format("run:{{{}}}:upload:chunks", session_id);
-    const std::string ttl = std::to_string(kRunTtl.count());
+    const std::string ttl = std::to_string(g_RunTTLSeconds.count());
 
     std::vector<std::string> raw_points;
     raw_points.reserve(points.size());

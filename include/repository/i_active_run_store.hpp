@@ -30,6 +30,9 @@ public:
 
     virtual boost::asio::awaitable<std::optional<ActiveRunRecord>> GetActiveRunByUserAsync(int64_t user_id) = 0;
 
+    // Used by paused-session heartbeats so a long pause doesn't silently expire the run
+    virtual boost::asio::awaitable<void> TouchActiveRunAsync(int64_t user_id, const std::string& session_id) = 0;
+
     // Telemetry ingestion
 
     /// Batch dedup (SET NX run:batch:{session_id}:{batch_uuid}). false = duplicate
@@ -39,7 +42,10 @@ public:
     virtual boost::asio::awaitable<void> ReleaseClaimBatchAsync(const std::string& session_id,
                                                                 const std::string& batch_uuid) = 0;
 
-    virtual boost::asio::awaitable<bool>
+    /// Append an accepted batch to the track atomically (FCALL track_flush).
+    /// nullopt = transport failure; 0 = replay (sequence_number already applied);
+    /// N = number of points appended
+    virtual boost::asio::awaitable<std::optional<int64_t>>
     AppendTrackBatchAsync(const std::string& session_id, std::span<const gameplay::workout_tracking::RunPoint> points,
                           double delta_meters, int64_t sequence_number) = 0;
 

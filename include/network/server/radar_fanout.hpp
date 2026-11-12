@@ -6,9 +6,13 @@
 #include "gameplay/territory_conquest/zone_channel_helper.hpp"
 #include "logger/logger.hpp"
 #include "network/server/session_manager.hpp"
+#include "network/server/user_session.hpp"
 
+#include <charconv>
 #include <cstdint>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -32,6 +36,9 @@ public:
     void operator()(std::string_view channel, std::string_view payload) const
     {
         run::proto::Envelope envelope;
+        // Team radar targets confirmed members only; capture events and public
+        // radar broadcast to every subscriber of the zone (no filter)
+        std::function<bool(const session::UserSession&)> filter;
         if (channel.find(":radar:") != std::string_view::npos)
         {
             // Radar channels carry a bare RadarPing; wrap it for clients.
@@ -68,9 +75,24 @@ public:
             return;
         }
 
+        // Team channel suffix carries the publisher's team id; the session side
+        // holds the profile-resolved membership (never client-supplied)
+        constexpr std::string_view kTeamChannelMark = ":radar:team:";
+        if (const auto mark = channel.rfind(kTeamChannelMark); mark != std::string_view::npos)
+        {
+            const std::string_view team_view = channel.substr(mark + kTeamChannelMark.size());
+            uint64_t team_id = 0;
+            const auto [ptr, ec] = std::from_chars(team_view.data(), team_view.data() + team_view.size(), team_id);
+            if (ec == std::errc{} && ptr == team_view.data() + team_view.size())
+            {
+                filter = [team_id](const session::UserSession& session)
+                { return session.GetTeamId() == std::optional<uint64_t>(team_id); };
+            }
+        }
+
         if (const auto parent6 = m_h3_service->GetParent(hex9, 6); parent6.has_value())
         {
-            m_sessions->BroadcastToZone(*parent6, serialized);
+            m_sessions->BroadcastToZone(*parent6, serialized, std::move(filter));
         }
     }
 

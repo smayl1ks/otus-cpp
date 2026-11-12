@@ -159,11 +159,21 @@ OfflineUploadService::ChunkAsync(int64_t user_id, const run::proto::session::Off
         co_return response;
     }
 
+    // Preview anticheat gates storage: mock providers or low GPS accuracy must
+    // be rejected before the chunk is held, otherwise the flags are lost and
+    // the final replay can no longer catch them
+    const auto preview = m_anticheat.ValidateBatch(points, utils::NowMs());
+    if (preview != gameplay::anticheat::AnticheatStatus::Ok)
+    {
+        LOG_INFO("[upload] chunk {} of session '{}' rejected: {}", request.chunk_index(), request.session_id(),
+                 gameplay::anticheat::ToString(preview));
+        response.set_anticheat_status(network::mappers::LocationMapper::ToProto(preview));
+        co_return response;
+    }
+
     response.set_received_chunks_count(co_await m_run_store->PutUploadChunkAsync(
         request.session_id(), request.chunk_index(),
         network::mappers::LocationMapper::ToRunPoints(meta->server_run_id, points)));
-
-    const auto preview = m_anticheat.ValidateBatch(points, utils::NowMs());
     response.set_anticheat_status(network::mappers::LocationMapper::ToProto(preview));
 
     LOG_DEBUG("[upload] chunk {} of session '{}' stored, {} chunks held", request.chunk_index(), request.session_id(),

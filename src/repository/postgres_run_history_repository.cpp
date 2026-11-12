@@ -127,6 +127,23 @@ void RewriteTrackPoints(pqxx::work& txn, int64_t run_id, std::span<const gamepla
 void TransferHexOwnership(pqxx::work& txn, const StoredRunSummary& summary,
                           std::vector<HexCaptureRecord>* captured_hexes_out)
 {
+    if (!summary.is_valid)
+    {
+        return;
+    }
+
+    // Per-hex leaderboard (GET /api/v1/hexagons/{id}/details -> top_runners):
+    // the capturing user earns the run's per-hex share on every captured hex.
+    // For a valid run total_score == hexagons_captured_count * kPointsPerHex,
+    // so the share equals the per-hex game constant
+    const int32_t per_hex_points = summary.hexagons_captured_count > 0
+                                       ? summary.total_score / static_cast<int32_t>(summary.hexagons_captured_count)
+                                       : 0;
+    const double per_hex_distance =
+        summary.hexagons_captured_count > 0
+            ? summary.total_distance_meters / static_cast<double>(summary.hexagons_captured_count)
+            : 0.0;
+
     for (const uint64_t hex : summary.claimed_hexes)
     {
         const auto previous = txn.exec("SELECT owner_user_id, owner_team_id FROM hexagons WHERE h3_index = $1",
@@ -146,25 +163,39 @@ void TransferHexOwnership(pqxx::work& txn, const StoredRunSummary& summary,
             }
         }
 
+        // RETURNING carries the authoritative post-capture record so the map
+        // cache can mirror it instead of a per-capture constant
+        const auto upsert = txn.exec("INSERT INTO hexagons (h3_index, owner_user_id, owner_team_id, top_score, "
+                                     "total_captures, captured_at, updated_at) "
+                                     "VALUES ($1, $2, NULL, $3, 1, now(), now()) "
+                                     "ON CONFLICT (h3_index) DO UPDATE SET "
+                                     "  owner_user_id = $2, top_score = GREATEST(hexagons.top_score, $3), "
+                                     "  total_captures = hexagons.total_captures + 1, captured_at = now(), "
+                                     "  updated_at = now() "
+                                     "RETURNING top_score",
+                                     pqxx::params{ToBigInt(hex), static_cast<int64_t>(summary.user_id),
+                                                  static_cast<int32_t>(summary.total_score)});
+        const int32_t new_top_score = upsert.empty() ? 0 : upsert[0][0].as<int32_t>();
+
         if (captured_hexes_out != nullptr)
         {
-            captured_hexes_out->push_back(HexCaptureRecord{hex, previous_owner});
+            captured_hexes_out->push_back(HexCaptureRecord{hex, previous_owner, new_top_score});
         }
-
-        txn.exec("INSERT INTO hexagons (h3_index, owner_user_id, owner_team_id, top_score, total_captures, "
-                 "captured_at, updated_at) "
-                 "VALUES ($1, $2, NULL, $3, 1, now(), now()) "
-                 "ON CONFLICT (h3_index) DO UPDATE SET "
-                 "  owner_user_id = $2, top_score = GREATEST(hexagons.top_score, $3), "
-                 "  total_captures = hexagons.total_captures + 1, captured_at = now(), updated_at = now()",
-                 pqxx::params{ToBigInt(hex), static_cast<int64_t>(summary.user_id),
-                              static_cast<int32_t>(summary.total_score)});
 
         txn.exec("INSERT INTO hexagon_history (h3_index, previous_owner_id, previous_team_id, new_owner_id, "
                  "new_team_id, score_at_capture, captured_at) "
                  "VALUES ($1, $2, $3, $4, NULL, $5, now())",
                  pqxx::params{ToBigInt(hex), previous_owner, previous_team, static_cast<int64_t>(summary.user_id),
                               static_cast<int32_t>(summary.total_score)});
+
+        txn.exec("INSERT INTO hexagon_user_stats (h3_index, user_id, game_points, total_distance_meters, "
+                 "visits_count, last_visited_at) "
+                 "VALUES ($1, $2, $3, $4, 1, now()) "
+                 "ON CONFLICT (h3_index, user_id) DO UPDATE SET "
+                 "  game_points = hexagon_user_stats.game_points + $3, "
+                 "  total_distance_meters = hexagon_user_stats.total_distance_meters + $4, "
+                 "  visits_count = hexagon_user_stats.visits_count + 1, last_visited_at = now()",
+                 pqxx::params{ToBigInt(hex), static_cast<int64_t>(summary.user_id), per_hex_points, per_hex_distance});
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -42,6 +43,12 @@ public:
     // live-run cache for radar routing (source of truth is the run service)
     virtual uint64_t GetActiveRunId() const noexcept = 0;
     virtual void SetActiveRunId(uint64_t run_id) noexcept = 0;
+
+    // Confirmed team membership for radar fan-out filtering (source of truth
+    // is the user profile; refreshed on every viewport re-subscribe). nullopt
+    // = no team: the session only sees public radar
+    virtual std::optional<uint64_t> GetTeamId() const noexcept = 0;
+    virtual void SetTeamId(std::optional<uint64_t> team_id) noexcept = 0;
 };
 
 } // namespace run::server::session
