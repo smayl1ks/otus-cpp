@@ -10,10 +10,12 @@ namespace run::service::running
 /// RedisActiveRunStore::AppendTrackBatchAsync.
 ///
 /// Contract (batch-atomic): args = {rows_json, sequence_number, points_count,
-/// delta_meters, ttl_seconds}. rows_json is an array of [lat, lon, speed, ts]
-/// for every accepted point of the batch. The sequence-number replay gate is
-/// checked once for the whole batch; either all points are appended or none.
-/// last_point_ts_ms is the name read back by GetActiveRunAsync (seam anchor).
+/// delta_meters, ttl_seconds}. rows_json is an array of
+/// [lat, lon, speed, ts, accuracy, is_mock] for every accepted point of the
+/// batch (accuracy/mock survive storage so the finalizer replay sees them).
+/// The sequence-number replay gate is checked once for the whole batch;
+/// either all points are appended or none. last_point_ts_ms is the name read
+/// back by GetActiveRunAsync (seam anchor).
 constexpr std::string_view kTrackFlushFunctionLib = R"lua(#!lua name=track_flush
 local function track_flush(keys, args)
   local last = redis.call('HGET', keys[2], 'last_sequence_number')
@@ -25,7 +27,7 @@ local function track_flush(keys, args)
   local rows = cjson.decode(args[1])
   local fresh = {}
   for _, r in ipairs(rows) do
-    fresh[#fresh + 1] = string.format('%s,%s,%s,%s', r[1], r[2], r[3], r[4])
+    fresh[#fresh + 1] = string.format('%s,%s,%s,%s,%s,%s', r[1], r[2], r[3], r[4], r[5], r[6])
   end
   redis.call('RPUSH', keys[1], unpack(fresh))
   redis.call('HINCRBYFLOAT', keys[2], 'total_distance_meters', args[4])

@@ -5,4 +5,6 @@ logs
 .runs_lease
 scripts/.venv/
 scripts/__pycache__/
-**/__pycache__/
+
+# TLS keys for nginx (dev self-signed / prod secrets)
+nginx/ssl/

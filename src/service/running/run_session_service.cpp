@@ -155,6 +155,39 @@ RunSessionService::CloseRunAsync(int64_t user_id, const std::string& session_id,
     auto record = co_await m_run_store->GetActiveRunAsync(session_id);
     if (!record.has_value() || record->user_id != user_id)
     {
+        if (auto stored = co_await m_run_history->GetFinalizedRunAsync(session_id, user_id); stored.has_value())
+        {
+            LOG_INFO("[session] recovered finalized run '{}' from PostgreSQL", session_id);
+            co_await m_run_store->SaveRunSummaryAsync(*stored);
+            co_await m_run_store->DropRunDataAsync(session_id, user_id);
+            co_return CloseRunOutcome{CloseRunOutcome::Status::kAlreadyClosed, std::move(stored)};
+        }
+
+        // Offline uploads hold the user slot without an active-run record
+        if (close_reason == repository::RunCloseReason::kCancelled)
+        {
+            if (auto meta = co_await m_run_store->GetUploadMetaAsync(session_id);
+                meta.has_value() && meta->user_id == user_id)
+            {
+                repository::ActiveRunRecord run;
+                run.session_id = meta->session_id;
+                run.server_run_id = meta->server_run_id;
+                run.user_id = meta->user_id;
+                run.team_id = meta->team_id;
+                run.mode = repository::RunMode::kOffline;
+                run.visibility = meta->visibility;
+                run.started_at_ms = meta->start_timestamp_ms;
+
+                LOG_INFO("[session] aborting offline upload of session '{}' (user {})", session_id, user_id);
+                auto summary = co_await m_run_finalizer->FinalizeAsync(run, repository::RunCloseReason::kCancelled, {},
+                                                                       utils::NowMs());
+                if (!summary.has_value())
+                {
+                    co_return CloseRunOutcome{CloseRunOutcome::Status::kFailed, std::nullopt};
+                }
+                co_return CloseRunOutcome{CloseRunOutcome::Status::kClosed, std::move(summary)};
+            }
+        }
         co_return CloseRunOutcome{CloseRunOutcome::Status::kNotFound, std::nullopt};
     }
 

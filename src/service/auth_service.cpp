@@ -107,13 +107,12 @@ net::awaitable<std::optional<uint64_t>> AuthService::ValidateTempToken(const std
     }
 
     std::string key = std::string(g_TempTokenPrefix) + token;
-    auto val_opt = co_await m_redis_repository->Get(key);
+
+    auto val_opt = co_await m_redis_repository->GetDel(key);
     if (!val_opt.has_value() || val_opt->empty())
     {
         co_return std::nullopt;
     }
-
-    co_await m_redis_repository->Delete(key);
 
     try
     {

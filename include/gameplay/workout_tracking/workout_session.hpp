@@ -24,6 +24,7 @@ struct RunPoint
     std::optional<float> speed_ms{std::nullopt};        ///< Instantaneous speed in meters per second
     float accuracy_meters{0.0f};                        ///< Horizontal accuracy estimate radius in meters
     std::optional<float> heading_degrees{std::nullopt}; ///< Direction of travel in degrees [0, 360)
+    bool is_mock{false};                                ///< Mock location provider flag (anticheat replay)
 
     territory_conquest::H3IndexValue h3_index{0};    ///< Uber H3 spatial index (Resolution 9)
     std::optional<int32_t> step_count{std::nullopt}; ///< Cumulative pedometer steps at this point

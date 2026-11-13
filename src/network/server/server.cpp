@@ -28,6 +28,14 @@ Server::Server(unsigned int io_threads, unsigned int work_threads)
     m_protobuf_controller = std::move(deps.protobuf_controller);
     m_running_services = std::move(deps.running_services);
 
+    // Map cache warm-up
+    if (m_running_services && m_running_services->hex_map_cache)
+    {
+        net::co_spawn(
+            m_context.GetLowerLayerIOContext(), [cache = m_running_services->hex_map_cache]() -> net::awaitable<void>
+            { (void)co_await cache->WarmUpAsync(); }, net::detached);
+    }
+
     try
     {
         run::redis::FleetSubscription subscription;

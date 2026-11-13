@@ -21,7 +21,7 @@ using gameplay::workout_tracking::RunPoint;
 
 constexpr auto g_RunTTLSeconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::hours(24));
 
-// Keys of one run share the "{session}" hash tag: one shard per run.
+// Keys of one run share the "{session}" hash tag: one shard per run
 std::string ActiveKey(const std::string& session_id)
 {
     return fmt::format("run:{{{}}}:active", session_id);
@@ -51,27 +51,26 @@ std::optional<Int> ParseNumber(const std::string& text)
 }
 
 // Track list element format, shared with the track_flush function:
-// "lat,lon,speed,ts" (speed may carry the full float text).
 std::optional<RunPoint> ParseTrackPoint(std::string_view raw)
 {
-    const auto lat_end = raw.find(',');
-    if (lat_end == std::string_view::npos)
+    std::vector<std::string_view> fields;
+    for (std::size_t begin = 0; begin <= raw.size();)
     {
-        return std::nullopt;
+        const auto end = raw.find(',', begin);
+        fields.push_back(raw.substr(begin, end == std::string_view::npos ? end : end - begin));
+        if (end == std::string_view::npos)
+        {
+            break;
+        }
+        begin = end + 1;
     }
-    const auto lon_end = raw.find(',', lat_end + 1);
-    if (lon_end == std::string_view::npos)
-    {
-        return std::nullopt;
-    }
-    const auto speed_end = raw.find(',', lon_end + 1);
-    if (speed_end == std::string_view::npos)
+    if (fields.size() != 4 && fields.size() != 6)
     {
         return std::nullopt;
     }
 
     RunPoint point;
-    if (const auto lat = ParseNumber<double>(std::string{raw.substr(0, lat_end)}); lat.has_value())
+    if (const auto lat = ParseNumber<double>(std::string{fields[0]}); lat.has_value())
     {
         point.coord.latitude = *lat;
     }
@@ -79,8 +78,7 @@ std::optional<RunPoint> ParseTrackPoint(std::string_view raw)
     {
         return std::nullopt;
     }
-    if (const auto lon = ParseNumber<double>(std::string{raw.substr(lat_end + 1, lon_end - lat_end - 1)});
-        lon.has_value())
+    if (const auto lon = ParseNumber<double>(std::string{fields[1]}); lon.has_value())
     {
         point.coord.longitude = *lon;
     }
@@ -88,18 +86,25 @@ std::optional<RunPoint> ParseTrackPoint(std::string_view raw)
     {
         return std::nullopt;
     }
-    if (const auto speed = ParseNumber<float>(std::string{raw.substr(lon_end + 1, speed_end - lon_end - 1)});
-        speed.has_value())
+    if (const auto speed = ParseNumber<float>(std::string{fields[2]}); speed.has_value())
     {
         point.speed_ms = *speed;
     }
-    if (const auto ts = ParseNumber<int64_t>(std::string{raw.substr(speed_end + 1)}); ts.has_value())
+    if (const auto ts = ParseNumber<int64_t>(std::string{fields[3]}); ts.has_value())
     {
         point.recorded_at = std::chrono::system_clock::time_point{std::chrono::milliseconds{*ts}};
     }
     else
     {
         return std::nullopt;
+    }
+    if (fields.size() == 6)
+    {
+        if (const auto accuracy = ParseNumber<float>(std::string{fields[4]}); accuracy.has_value())
+        {
+            point.accuracy_meters = *accuracy;
+        }
+        point.is_mock = fields[5] == "1";
     }
     return point;
 }
@@ -317,13 +322,13 @@ RedisActiveRunStore::AppendTrackBatchAsync(const std::string& session_id,
         co_return 0;
     }
 
-    // Batch-atomic rows: the replay gate and accumulators are keyed by
-    // batch-level scalars inside track_flush
+    // Batch-atomic rows
     auto rows = nlohmann::json::array();
     for (const auto& point : points)
     {
         rows.push_back({fmt::format("{}", point.coord.latitude), fmt::format("{}", point.coord.longitude),
-                        fmt::format("{}", point.speed_ms.value_or(0.0f)), std::to_string(point.RecordedAtMs())});
+                        fmt::format("{}", point.speed_ms.value_or(0.0f)), std::to_string(point.RecordedAtMs()),
+                        fmt::format("{}", point.accuracy_meters), point.is_mock ? "1" : "0"});
     }
 
     const std::string track_key = TrackKey(session_id);
@@ -538,6 +543,7 @@ boost::asio::awaitable<bool> RedisActiveRunStore::InitUploadAsync(const UploadMe
         {"device_id", meta.device_id},
         {"app_version", meta.app_version},
         {"total_chunks", std::to_string(meta.total_chunks)},
+        {"total_points_count", std::to_string(meta.total_points_count)},
     };
 
     co_await m_client->DeleteAsync(fmt::format("run:{{{}}}:upload:chunks", meta.session_id));
@@ -603,6 +609,10 @@ RedisActiveRunStore::GetUploadMetaAsync(const std::string& session_id)
         {
             meta.total_chunks = std::stoi(it->second);
         }
+        if (const auto it = fields.find("total_points_count"); it != fields.end())
+        {
+            meta.total_points_count = std::stoi(it->second);
+        }
     }
     catch (const std::exception& ex)
     {
@@ -630,8 +640,9 @@ RedisActiveRunStore::PutUploadChunkAsync(const std::string& session_id, int32_t 
     raw_points.reserve(points.size());
     for (const auto& point : points)
     {
-        raw_points.push_back(fmt::format("{},{},{},{}", point.coord.latitude, point.coord.longitude,
-                                         point.speed_ms.value_or(0.0f), point.RecordedAtMs()));
+        raw_points.push_back(fmt::format("{},{},{},{},{},{}", point.coord.latitude, point.coord.longitude,
+                                         point.speed_ms.value_or(0.0f), point.RecordedAtMs(), point.accuracy_meters,
+                                         point.is_mock ? 1 : 0));
     }
 
     boost::redis::request commands;

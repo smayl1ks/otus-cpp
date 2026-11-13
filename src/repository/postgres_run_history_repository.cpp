@@ -31,6 +31,18 @@ std::string_view ValidationReasonName(ValidationVerdict verdict)
     return index < std::size(kValidationReasonNames) ? kValidationReasonNames[index] : "NONE";
 }
 
+ValidationVerdict ParseValidationReason(std::string_view name)
+{
+    for (std::size_t i = 0; i < std::size(kValidationReasonNames); ++i)
+    {
+        if (name == kValidationReasonNames[i])
+        {
+            return static_cast<ValidationVerdict>(i);
+        }
+    }
+    return ValidationVerdict::kValid; // stored "NONE"
+}
+
 /// H3 uint64 indexes are stored in BIGINT columns
 constexpr int64_t ToBigInt(uint64_t h3_index)
 {
@@ -258,14 +270,15 @@ boost::asio::awaitable<std::optional<int64_t>> PostgresRunHistoryRepository::Cre
         });
 }
 
-boost::asio::awaitable<bool>
+boost::asio::awaitable<FinalizeStatus>
 PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                                                std::span<const gameplay::workout_tracking::RunPoint> track,
                                                std::vector<HexCaptureRecord>* captured_hexes_out)
 {
     auto captured_hexes = std::make_shared<std::vector<HexCaptureRecord>>();
-    const bool persisted = co_await m_work_context.AsyncPost(
-        [summary, track, captured_hexes]() -> bool
+    auto status = std::make_shared<FinalizeStatus>(FinalizeStatus::kError);
+    co_await m_work_context.AsyncPost(
+        [summary, track, captured_hexes, status]() -> bool
         {
             try
             {
@@ -281,6 +294,7 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
 
                 LOG_INFO("Run {} ('{}') persisted: {} points, {} hexes, valid={}", summary.server_run_id,
                          summary.session_id, track.size(), summary.hexagons_captured_count, summary.is_valid);
+                *status = FinalizeStatus::kPersisted;
                 return true;
             }
             catch (const RunNotActiveError&)
@@ -288,21 +302,92 @@ PostgresRunHistoryRepository::FinalizeRunAsync(const StoredRunSummary& summary,
                 LOG_WARN("Run {} ('{}') is not active anymore — finalize refused", summary.server_run_id,
                          summary.session_id);
                 captured_hexes->clear();
-                return false;
+                *status = FinalizeStatus::kAlreadyFinished;
+                return true;
             }
             catch (const std::exception& e)
             {
                 LOG_ERROR("Failed to finalize run {} ('{}'): {}", summary.server_run_id, summary.session_id, e.what());
                 captured_hexes->clear();
+                *status = FinalizeStatus::kError;
                 return false;
             }
         });
 
-    if (persisted && captured_hexes_out != nullptr)
+    if (*status == FinalizeStatus::kPersisted && captured_hexes_out != nullptr)
     {
         *captured_hexes_out = std::move(*captured_hexes);
     }
-    co_return persisted;
+    co_return *status;
+}
+
+boost::asio::awaitable<std::optional<StoredRunSummary>>
+PostgresRunHistoryRepository::GetFinalizedRunAsync(const std::string& session_id, int64_t user_id)
+{
+    auto result = std::make_shared<std::optional<StoredRunSummary>>();
+
+    const bool ok = co_await m_work_context.AsyncPost(
+        [session_id, user_id, result]() -> bool
+        {
+            try
+            {
+                auto connection = ConnectionPool::Get().GetConnection();
+                pqxx::work txn(*connection);
+
+                // claimed_hexes is not persisted per-run (hexagon_history carries
+                // no run_id) and stays empty in the recovered summary: ownership
+                // was already applied by the winning finalize
+                const auto rows = txn.exec(
+                    "SELECT r.id, r.user_id, r.status, r.total_distance_meters, r.total_duration_seconds, "
+                    "       r.avg_pace_sec_per_km, r.hexagons_captured, r.game_points_earned, r.is_valid, "
+                    "       r.validation_reason, "
+                    "       EXTRACT(EPOCH FROM r.started_at) * 1000, EXTRACT(EPOCH FROM r.finished_at) * 1000, "
+                    "       (SELECT count(*) FROM run_points rp WHERE rp.run_id = r.id) "
+                    "FROM runs r "
+                    "WHERE r.session_id = $1 AND r.user_id = $2 AND r.status IN ('finished', 'cancelled') "
+                    "ORDER BY r.id DESC LIMIT 1",
+                    pqxx::params{session_id, user_id});
+                if (rows.empty())
+                {
+                    txn.commit();
+                    return true;
+                }
+
+                const auto& row = rows[0];
+                StoredRunSummary summary;
+                summary.session_id = session_id;
+                summary.server_run_id = row[0].as<int64_t>();
+                summary.user_id = row[1].as<int64_t>();
+                summary.close_reason =
+                    row[2].as<std::string>() == "cancelled" ? RunCloseReason::kCancelled : RunCloseReason::kFinished;
+                summary.total_distance_meters = row[3].as<double>();
+                summary.duration_seconds = static_cast<uint32_t>(row[4].as<int64_t>());
+                summary.moving_duration_seconds = summary.duration_seconds; // placeholder, same as ComputeClose
+                summary.avg_pace_sec_per_km = static_cast<uint32_t>(row[5].as<int32_t>());
+                summary.avg_speed_kmh = 0.0f; // not persisted
+                summary.hexagons_captured_count = static_cast<uint32_t>(row[6].as<int32_t>());
+                summary.total_score = static_cast<uint32_t>(row[7].as<int32_t>());
+                summary.is_valid = row[8].as<bool>();
+                summary.verdict = ParseValidationReason(row[9].as<std::string>());
+                summary.started_at_ms = static_cast<int64_t>(row[10].as<double>());
+                summary.finished_at_ms = static_cast<int64_t>(row[11].as<double>());
+                summary.total_points_count = static_cast<int32_t>(row[12].as<int64_t>());
+                *result = std::move(summary);
+                txn.commit();
+                return true;
+            }
+            catch (const std::exception& e)
+            {
+                LOG_ERROR("Recovery lookup of finalized run '{}' failed: {}", session_id, e.what());
+                return false;
+            }
+        });
+
+    if (!ok)
+    {
+        co_return std::nullopt;
+    }
+    co_return std::move(*result);
 }
 
 } // namespace run::repository

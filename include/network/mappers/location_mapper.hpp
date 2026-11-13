@@ -117,6 +117,7 @@ public:
             p.speed_ms = points[i].speed_ms;
             p.altitude_meters = points[i].altitude_meters;
             p.heading_degrees = points[i].heading_degrees;
+            p.is_mock = points[i].is_mock;
             p.recorded_at = points[i].recorded_at;
         }
         return track;

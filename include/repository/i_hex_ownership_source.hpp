@@ -46,6 +46,9 @@ public:
 
     /// Loads owner info and the top runners of a single res-9 hex (nullopt when unknown hex or on failure)
     virtual boost::asio::awaitable<std::optional<HexDetailsRecord>> GetHexDetailsAsync(uint64_t h3_index) = 0;
+
+    /// Loads every captured hex (startup map-cache warm-up; empty on failure)
+    virtual boost::asio::awaitable<std::vector<HexOwnershipRecord>> GetAllCapturedAsync() = 0;
 };
 
 } // namespace run::repository

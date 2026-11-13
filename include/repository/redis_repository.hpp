@@ -28,6 +28,11 @@ public:
         co_return co_await m_client->GetAsync(key);
     }
 
+    net::awaitable<std::optional<std::string>> GetDel(const std::string& key) override
+    {
+        co_return co_await m_client->GetDelAsync(key);
+    }
+
     net::awaitable<bool> Delete(const std::string& key) override
     {
         co_return co_await m_client->DeleteAsync(key);

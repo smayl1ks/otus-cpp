@@ -221,4 +221,44 @@ RedisHexMapCache::GetSnapshotAsync(std::span<const uint64_t> parent_zones6)
     co_return snapshot;
 }
 
+boost::asio::awaitable<std::optional<std::size_t>> RedisHexMapCache::WarmUpAsync()
+{
+    if (m_client == nullptr || m_fallback_source == nullptr || m_parent_zone6_of == nullptr)
+    {
+        co_return std::nullopt;
+    }
+
+    const auto records = co_await m_fallback_source->GetAllCapturedAsync();
+    if (records.empty())
+    {
+        LOG_INFO("[map-cache] warm-up: no captured hexes to load");
+        co_return std::size_t{0};
+    }
+
+    std::unordered_map<uint64_t, std::vector<HexOwnershipRecord>> per_zone;
+    for (const auto& record : records)
+    {
+        if (const auto zone6 = m_parent_zone6_of(record.h3_index); zone6.has_value())
+        {
+            per_zone[*zone6].push_back(record);
+        }
+    }
+
+    std::size_t warmed = 0;
+    for (const auto& [zone6, hexes] : per_zone)
+    {
+        if (co_await WriteZoneBatchAsync(hexes, zone6))
+        {
+            warmed += hexes.size();
+        }
+        else
+        {
+            LOG_WARN("[map-cache] warm-up write failed for {} hex(es) of zone {:x}", hexes.size(), zone6);
+        }
+    }
+
+    LOG_INFO("[map-cache] warmed {} of {} captured hex(es) across {} zone(s)", warmed, records.size(), per_zone.size());
+    co_return warmed;
+}
+
 } // namespace run::repository

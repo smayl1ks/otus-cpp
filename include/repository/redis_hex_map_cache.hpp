@@ -36,6 +36,8 @@ public:
     boost::asio::awaitable<std::vector<HexOwnershipRecord>>
     GetSnapshotAsync(std::span<const uint64_t> parent_zones6) override;
 
+    boost::asio::awaitable<std::optional<std::size_t>> WarmUpAsync() override;
+
 private:
     std::shared_ptr<run::redis::RedisSentinelClient> m_client;
     std::shared_ptr<IHexOwnershipSource> m_fallback_source;

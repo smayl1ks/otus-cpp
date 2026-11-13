@@ -50,11 +50,37 @@ OfflineUploadService::InitAsync(int64_t user_id, const run::proto::session::Offl
         co_return response;
     }
 
+    const int32_t max_total_chunks =
+        (m_limits.max_total_points + static_cast<int32_t>(m_limits.max_points_per_chunk) - 1) /
+        static_cast<int32_t>(m_limits.max_points_per_chunk);
+    if (request.total_chunks() < 1 || request.total_chunks() > max_total_chunks)
+    {
+        LOG_INFO("[upload] init of session '{}' rejected: {} chunks declared (cap {})", request.session_id(),
+                 request.total_chunks(), max_total_chunks);
+        response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_TOO_MANY_POINTS);
+        co_return response;
+    }
+
     // Idempotent init: resume an interrupted upload of the same session
     if (auto existing = co_await m_run_store->GetUploadMetaAsync(request.session_id()); existing.has_value())
     {
         if (existing->user_id != user_id)
         {
+            response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_SESSION_CONFLICT);
+            co_return response;
+        }
+
+        // Resume must replay the exact registered payload
+        const bool same_payload = existing->team_id == request.team_id() &&
+                                  existing->visibility == network::mappers::ToDomain(request.visibility()) &&
+                                  existing->start_timestamp_ms == request.start_timestamp() &&
+                                  existing->finish_timestamp_ms == request.finish_timestamp() &&
+                                  existing->event_id == request.event_id() &&
+                                  existing->total_points_count == request.total_points_count() &&
+                                  existing->total_chunks == request.total_chunks();
+        if (!same_payload)
+        {
+            LOG_INFO("[upload] resume of session '{}' rejected: declared payload differs", request.session_id());
             response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_SESSION_CONFLICT);
             co_return response;
         }
@@ -113,6 +139,7 @@ OfflineUploadService::InitAsync(int64_t user_id, const run::proto::session::Offl
     meta.device_id = request.device_id();
     meta.app_version = request.app_version();
     meta.total_chunks = request.total_chunks();
+    meta.total_points_count = request.total_points_count();
 
     if (!(co_await m_run_store->InitUploadAsync(meta)))
     {
@@ -201,6 +228,16 @@ OfflineUploadService::CommitAsync(int64_t user_id, const run::proto::session::Of
     auto meta = co_await m_run_store->GetUploadMetaAsync(request.session_id());
     if (!meta.has_value() || meta->user_id != user_id)
     {
+        if (auto stored = co_await m_run_history->GetFinalizedRunAsync(request.session_id(), user_id);
+            stored.has_value())
+        {
+            LOG_INFO("[upload] commit of session '{}' recovered already-committed result from PostgreSQL",
+                     request.session_id());
+            co_await m_run_store->SaveRunSummaryAsync(*stored);
+            response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_ALREADY_COMMITTED);
+            *response.mutable_summary() = network::mappers::BuildSummary(*stored);
+            co_return response;
+        }
         response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_SESSION_NOT_FOUND);
         co_return response;
     }
@@ -213,6 +250,32 @@ OfflineUploadService::CommitAsync(int64_t user_id, const run::proto::session::Of
     }
 
     auto track = co_await m_run_store->AssembleUploadTrackAsync(request.session_id());
+
+    if (static_cast<int32_t>(track.size()) > meta->total_points_count)
+    {
+        LOG_INFO("[upload] commit of session '{}' rejected: {} points uploaded, {} declared", request.session_id(),
+                 track.size(), meta->total_points_count);
+        response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_TOO_MANY_POINTS);
+        co_return response;
+    }
+    if (static_cast<int32_t>(track.size()) != meta->total_points_count)
+    {
+        LOG_INFO("[upload] commit of session '{}' rejected: {} of {} declared points uploaded", request.session_id(),
+                 track.size(), meta->total_points_count);
+        response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_SESSION_CONFLICT);
+        co_return response;
+    }
+    for (const auto& point : track)
+    {
+        const auto ts = point.RecordedAtMs();
+        if (ts < meta->start_timestamp_ms || ts > meta->finish_timestamp_ms)
+        {
+            LOG_INFO("[upload] commit of session '{}' rejected: point ts {} outside declared window [{}, {}]",
+                     request.session_id(), ts, meta->start_timestamp_ms, meta->finish_timestamp_ms);
+            response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_INVALID_TIME_RANGE);
+            co_return response;
+        }
+    }
 
     repository::ActiveRunRecord run;
     run.session_id = meta->session_id;

@@ -220,14 +220,34 @@ RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::
         monitoring::MetricsCollector::Instance().ObserveLatency(computed.capture_latency_us);
     }
 
-    repository::StoredRunSummary& summary = computed.summary;
+    repository::StoredRunSummary summary = std::move(computed.summary);
 
     // PostgreSQL final transaction
-    if (!(co_await m_run_history->FinalizeRunAsync(summary, computed.valid_points, &computed.captured_hexes)))
+    const auto finalize_status =
+        co_await m_run_history->FinalizeRunAsync(summary, computed.valid_points, &computed.captured_hexes);
+    if (finalize_status == repository::FinalizeStatus::kError)
     {
         LOG_ERROR("[finalizer] history persistence failed for session '{}', run stays open", run.session_id);
         co_await m_run_store->ReleaseClosingAsync(run.session_id);
         co_return std::nullopt;
+    }
+    if (finalize_status == repository::FinalizeStatus::kAlreadyFinished)
+    {
+        auto recovered = co_await m_run_history->GetFinalizedRunAsync(run.session_id, run.user_id);
+        if (!recovered.has_value())
+        {
+            LOG_ERROR("[finalizer] run '{}' already finalized but not recoverable from PostgreSQL", run.session_id);
+            co_await m_run_store->ReleaseClosingAsync(run.session_id);
+            co_return std::nullopt;
+        }
+        LOG_INFO("[finalizer] session '{}' result recovered from PostgreSQL (redis summary lost)", run.session_id);
+        summary = std::move(*recovered);
+        if (!(co_await m_run_store->SaveRunSummaryAsync(summary)))
+        {
+            LOG_ERROR("[finalizer] failed to save recovered summary for session '{}'", run.session_id);
+        }
+        co_await m_run_store->DropRunDataAsync(run.session_id, run.user_id);
+        co_return summary;
     }
 
     // map cache + capture events (invalid runs carry no captures)
@@ -282,12 +302,9 @@ net::awaitable<void> RunFinalizer::FanOutCapturesAsync(const repository::ActiveR
         {
             if (auto parent_zone = m_h3_service.GetParent(capture.h3_index, 6); parent_zone.has_value())
             {
-                per_zone[*parent_zone].push_back(
-                    repository::HexOwnershipRecord{capture.h3_index, static_cast<uint64_t>(run.user_id), username,
-                                                   color,
-                                                   capture.top_score != 0
-                                                       ? capture.top_score
-                                                       : static_cast<int32_t>(kPointsPerHex)});
+                per_zone[*parent_zone].push_back(repository::HexOwnershipRecord{
+                    capture.h3_index, static_cast<uint64_t>(run.user_id), username, color,
+                    capture.top_score != 0 ? capture.top_score : static_cast<int32_t>(kPointsPerHex)});
             }
         }
         for (const auto& [zone6, hexes] : per_zone)

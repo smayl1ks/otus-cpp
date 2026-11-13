@@ -2,7 +2,9 @@
 
 #include <boost/asio/awaitable.hpp>
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -37,6 +39,8 @@ public:
     /// Collects deduplicated captured hexes across the given res-6 zones
     virtual boost::asio::awaitable<std::vector<HexOwnershipRecord>>
     GetSnapshotAsync(std::span<const uint64_t> parent_zones6) = 0;
+
+    virtual boost::asio::awaitable<std::optional<std::size_t>> WarmUpAsync() = 0;
 };
 
 } // namespace run::repository

@@ -101,6 +101,7 @@ struct UploadMetaRecord
     std::string device_id;
     std::string app_version;
     int32_t total_chunks{0};
+    int32_t total_points_count{0};
 };
 
 // New history row (PostgreSQL plane: runs, status='active'), created at START

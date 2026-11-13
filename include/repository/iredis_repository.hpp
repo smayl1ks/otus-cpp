@@ -21,6 +21,8 @@ public:
 
     virtual net::awaitable<std::optional<std::string>> Get(const std::string& key) = 0;
 
+    virtual net::awaitable<std::optional<std::string>> GetDel(const std::string& key) = 0;
+
     virtual net::awaitable<bool> Delete(const std::string& key) = 0;
 };
 
