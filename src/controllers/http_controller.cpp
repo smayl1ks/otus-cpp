@@ -167,13 +167,13 @@ HttpController::HandleHexDetails(uint64_t h3_index, http::request<http::string_b
                            {"game_points", runner.game_points}});
     }
 
-    nlohmann::json body = {
-        {"h3_index", details->h3_index}, {"top_score", details->top_score}, {"top_runners", std::move(runners)}};
+    nlohmann::json body = {{"h3_index", details->h3_index}, {"top_runners", std::move(runners)}};
     if (details->owner_user_id.has_value())
     {
         body["owner_user_id"] = *details->owner_user_id;
         body["owner_username"] = details->owner_username;
         body["owner_color_hex"] = details->owner_color_hex;
+        body["owner_score"] = details->owner_score;
     }
     else
     {

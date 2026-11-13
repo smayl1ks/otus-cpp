@@ -134,7 +134,7 @@ PostgresHexOwnershipSource::GetHexDetailsAsync(uint64_t h3_index)
                 pqxx::work txn(*connection);
 
                 const auto hex_rows = txn.exec("SELECT h.owner_user_id, COALESCE(u.username, ''), "
-                                               "       COALESCE(u.player_color_hex, '#000000'), h.top_score "
+                                               "       COALESCE(u.player_color_hex, '#000000') "
                                                "FROM hexagons h LEFT JOIN users u ON u.id = h.owner_user_id "
                                                "WHERE h.h3_index = $1",
                                                pqxx::params{h3});
@@ -152,8 +152,6 @@ PostgresHexOwnershipSource::GetHexDetailsAsync(uint64_t h3_index)
                     details.owner_username = hex_row[1].as<std::string>();
                     details.owner_color_hex = hex_row[2].as<std::string>();
                 }
-                details.top_score = hex_row[3].as<int32_t>();
-
                 constexpr int kMaxTopRunners = 5;
                 const auto runner_rows =
                     txn.exec("SELECT s.user_id, u.username, COALESCE(u.player_color_hex, '#000000'), s.game_points "
@@ -167,6 +165,17 @@ PostgresHexOwnershipSource::GetHexDetailsAsync(uint64_t h3_index)
                     details.top_runners.push_back(HexTopRunnerRecord{static_cast<uint64_t>(row[0].as<int64_t>()),
                                                                      row[1].as<std::string>(), row[2].as<std::string>(),
                                                                      row[3].as<int32_t>()});
+                }
+
+                if (details.owner_user_id.has_value())
+                {
+                    const auto owner_rows = txn.exec("SELECT game_points FROM hexagon_user_stats "
+                                                     "WHERE h3_index = $1 AND user_id = $2",
+                                                     pqxx::params{h3, static_cast<int64_t>(*details.owner_user_id)});
+                    if (!owner_rows.empty())
+                    {
+                        details.owner_score = owner_rows[0][0].as<int32_t>();
+                    }
                 }
 
                 *result = std::move(details);

@@ -21,16 +21,15 @@ struct HexTopRunnerRecord
     int32_t game_points{0};
 };
 
-/// Hexagon details for the REST GET /api/v1/hexagons/{h3_index}/details endpoint;
-/// has_value() == false means the hex was never captured
+/// Hexagon details for the REST GET /api/v1/hexagons/{h3_index}/details endpoint
 struct HexDetailsRecord
 {
     uint64_t h3_index{0};
     std::optional<uint64_t> owner_user_id;
     std::string owner_username;
     std::string owner_color_hex;
-    int32_t top_score{0};
     std::vector<HexTopRunnerRecord> top_runners;
+    int32_t owner_score{0};
 };
 
 /// Read-only source of hex ownership records for the map self-heal cache path
