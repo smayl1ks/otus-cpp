@@ -11,12 +11,6 @@ project(print_ip VERSION ${PROJECT_VERSION})
 
 option(WITH_BOOST_TEST "Whether to build Boost test" ON)
 
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/version.h.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/version.h"
-    @ONLY
-)
-
 add_executable(print_ip src/main.cpp)
 
 set_target_properties(print_ip PROPERTIES
@@ -35,7 +29,7 @@ if(WITH_BOOST_TEST)
     add_executable(test_version tests/test_version.cpp)
 
     set_target_properties(test_version PROPERTIES
-        CXX_STANDARD 17
+        CXX_STANDARD 20
         CXX_STANDARD_REQUIRED ON
     )
 
