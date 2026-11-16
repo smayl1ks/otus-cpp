@@ -3,55 +3,56 @@
 #include <cstddef>
 #include <memory>
 #include <new>
-#include <type_traits>
 
-template <typename T>
-struct AllocatorPool
+class AllocatorPool
 {
 public:
-    std::size_t limit{0};
-    std::size_t allocated{0};
-    T* storage{nullptr};
-
-    explicit AllocatorPool(std::size_t lim)
-        : limit(lim)
+    explicit AllocatorPool(std::size_t limit_bytes)
+        : m_limit(limit_bytes)
+        , m_storage(static_cast<std::byte*>(::operator new(limit_bytes)))
     {
     }
+
+    AllocatorPool(const AllocatorPool&) = delete;
+    AllocatorPool& operator=(const AllocatorPool&) = delete;
 
     ~AllocatorPool()
     {
-        if (storage)
-        {
-            ::operator delete(storage, std::align_val_t{alignof(T)});
-        }
+        ::operator delete(m_storage);
     }
 
-    T* allocate(std::size_t n)
+    void* allocate(std::size_t bytes, std::size_t alignment)
     {
-        if (n == 0)
+        if (bytes == 0)
         {
             return nullptr;
         }
 
-        if (allocated + n > limit)
+        void* request = m_storage + m_allocated;
+        std::size_t available = m_limit - m_allocated;
+        void* result = std::align(alignment, bytes, request, available);
+        if (!result)
         {
             throw std::bad_alloc();
         }
 
-        if (!storage)
-        {
-            storage = static_cast<T*>(::operator new(limit * sizeof(T), std::align_val_t{alignof(T)}));
-        }
-
-        T* result = storage + allocated;
-        allocated += n;
+        m_allocated = m_limit - available + bytes;
         return result;
     }
 
-    void deallocate(T*, std::size_t) noexcept
+    void deallocate(void*, std::size_t) noexcept
     {
-        // аллокатор освобождает всю память самостоятельно в деструкторе пула
     }
+
+private:
+    std::size_t m_limit;
+    std::size_t m_allocated{0};
+    std::byte* m_storage{nullptr};
+};
+
+struct PoolHolder
+{
+    std::shared_ptr<AllocatorPool> pool;
 };
 
 template <typename T, std::size_t N>
@@ -61,13 +62,13 @@ public:
     using value_type = T;
 
     CustomAllocator()
-        : m_pool(std::make_shared<AllocatorPool<T>>(N))
+        : m_pool(std::make_shared<PoolHolder>())
     {
     }
 
     template <typename U>
-    CustomAllocator(const CustomAllocator<U, N>&)
-        : m_pool(std::make_shared<AllocatorPool<T>>(N))
+    CustomAllocator(const CustomAllocator<U, N>& other) noexcept
+        : m_pool(other.m_pool)
     {
     }
 
@@ -79,25 +80,22 @@ public:
 
     T* allocate(std::size_t n)
     {
-        return m_pool->allocate(n);
+        if (!m_pool->pool)
+        {
+            m_pool->pool = std::make_shared<AllocatorPool>(N * sizeof(T));
+        }
+        return static_cast<T*>(m_pool->pool->allocate(n * sizeof(T), alignof(T)));
     }
 
     void deallocate(T* p, std::size_t n) noexcept
     {
-        m_pool->deallocate(p, n);
+        m_pool->pool->deallocate(p, n * sizeof(T));
     }
 
     template <typename U>
     bool operator==(const CustomAllocator<U, N>& other) const noexcept
     {
-        if constexpr (std::is_same_v<T, U>)
-        {
-            return m_pool == other.m_pool;
-        }
-        else
-        {
-            return false;
-        }
+        return m_pool == other.m_pool;
     }
 
     template <typename U>
@@ -107,7 +105,7 @@ public:
     }
 
 private:
-    std::shared_ptr<AllocatorPool<T>> m_pool;
+    std::shared_ptr<PoolHolder> m_pool;
     template <typename U, std::size_t M>
     friend class CustomAllocator;
 };
