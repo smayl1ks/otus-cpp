@@ -1,50 +1,79 @@
-#include "ip_filter.hpp"
-
+#include <cstddef>
 #include <iostream>
+#include <memory>
+#include <string>
 
-int main(int argc, char const *argv[])
+#include "controller.hpp"
+#include "models/figures.hpp"
+
+namespace gui
 {
-    (void)argc;
-    (void)argv;
 
+void OnCreateNewDocument(controller::Controller& controller)
+{
+    controller.CreateNewDocument();
+}
+
+void OnImportDocument(controller::Controller& controller, const std::string& path)
+{
+    controller.ImportDocument(path);
+}
+
+void OnExportDocument(controller::Controller& controller, const std::string& path)
+{
+    controller.ExportDocument(path);
+}
+
+void OnAddRectangle(controller::Controller& controller, int width, int height)
+{
+    controller.AddShape(std::make_shared<model::Rectangle>(width, height));
+}
+
+void OnAddCircle(controller::Controller& controller, int radius)
+{
+    controller.AddShape(std::make_shared<model::Circle>(radius));
+}
+
+void OnRemoveShape(controller::Controller& controller, std::size_t index)
+{
+    controller.RemoveShape(index);
+}
+
+} // namespace gui
+
+namespace
+{
+
+constexpr int kDemoRectangleWidth = 10;
+constexpr int kDemoRectangleHeight = 20;
+constexpr int kDemoCircleRadius = 5;
+constexpr int kDemoSmallRectangleWidth = 3;
+constexpr int kDemoSmallRectangleHeight = 4;
+
+} // namespace
+
+int main()
+{
     try
     {
-        filter::IPPool ip_pool;
-        for(std::string line; std::getline(std::cin, line);)
-        {
-            if (line.empty())
-            {
-                continue;
-            }
+        controller::Controller controller;
 
-            filter::IP ip;
+        gui::OnCreateNewDocument(controller);
 
-            if (std::sscanf(line.c_str(), "%d.%d.%d.%d", &ip[0], &ip[1], &ip[2], &ip[3]) == 4)
-            {
-                ip_pool.push_back(ip);
-            }
-        }
+        gui::OnAddRectangle(controller, kDemoRectangleWidth, kDemoRectangleHeight);
+        gui::OnAddCircle(controller, kDemoCircleRadius);
+        gui::OnAddRectangle(controller, kDemoSmallRectangleWidth, kDemoSmallRectangleHeight);
 
-        filter::reverse_lexicographically_sort(ip_pool);
+        gui::OnExportDocument(controller, "document.editor");
 
-        filter::print_ip_pool(ip_pool);
+        gui::OnRemoveShape(controller, 0);
 
-        filter::print_ip_pool(filter::filter(ip_pool, 1));
-
-        // TODO filter by first and second bytes and output
-        // ip = filter(46, 70)
-
-        filter::print_ip_pool(filter::filter(ip_pool, 46, 70));
-
-        // TODO filter by any byte and output
-        // ip = filter_any(46)
-
-        filter::print_ip_pool(filter::filter_any(ip_pool, 46));
-
+        gui::OnImportDocument(controller, "document.editor");
     }
-    catch(const std::exception &e)
+    catch (const std::exception& e)
     {
-        std::cerr << e.what() << std::endl;
+        std::cerr << e.what() << "\n";
+        return 1;
     }
 
     return 0;
