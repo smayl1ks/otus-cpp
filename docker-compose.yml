@@ -10,9 +10,14 @@ services:
       - "${NGINX_PORT:-80}:80"
       - "${NGINX_SSL_PORT:-443}:443"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/ssl:/etc/nginx/ssl:ro
       - ./dist:/usr/share/nginx/html:ro
+    # Конфиг через docker config, а не файловый bind-mount: одиночные файловые
+    # маунты ломаются в Docker Desktop + WSL2 после каждого рестарта
+    # (proxy /run/desktop/mnt/host/wsl/docker-desktop-bind-mounts не пересоздаётся).
+    configs:
+      - source: nginx_conf
+        target: /etc/nginx/nginx.conf
     ulimits:
       nofile:
         soft: 200000
@@ -46,8 +51,10 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
     volumes:
-      - ./runner.cfg:/etc/runner/runner.cfg:ro
       - ./logs/node_1:/tmp/runner/logs
+    configs:
+      - source: runner_cfg
+        target: /etc/runner/runner.cfg
     healthcheck:
       # runner.cfg: network.http.port=8081
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
@@ -85,8 +92,10 @@ services:
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
     volumes:
-      - ./runner.cfg:/etc/runner/runner.cfg:ro
       - ./logs/node_2:/tmp/runner/logs
+    configs:
+      - source: runner_cfg
+        target: /etc/runner/runner.cfg
     healthcheck:
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
       interval: 10s
@@ -112,7 +121,8 @@ services:
     restart: always
     command: redis-server --port 6379 --protected-mode no
     ports:
-      - "16379:6379" # manual redis-cli debugging only
+      # Только localhost: Redis без пароля не должен быть виден из LAN
+      - "127.0.0.1:16379:6379" # manual redis-cli debugging only
     networks:
       app_network:
         ipv4_address: 172.30.0.10
@@ -134,7 +144,8 @@ services:
     restart: always
     command: redis-server --port 6381 --protected-mode no
     ports:
-      - "16381:6381" # manual redis-cli debugging only
+      # Только localhost: Redis без пароля не должен быть виден из LAN
+      - "127.0.0.1:16381:6381" # manual redis-cli debugging only
     networks:
       app_network:
         ipv4_address: 172.30.0.11
@@ -160,7 +171,8 @@ services:
     volumes:
       - ./redis:/etc/redis-config:ro
     ports:
-      - "36379:26379"
+      # Только localhost: sentinel без пароля не должен быть виден из LAN
+      - "127.0.0.1:36379:26379"
     depends_on:
       - master-0
       - master-1
@@ -176,7 +188,7 @@ services:
     volumes:
       - ./redis:/etc/redis-config:ro
     ports:
-      - "36380:26379"
+      - "127.0.0.1:36380:26379"
     depends_on:
       - master-0
       - master-1
@@ -192,7 +204,7 @@ services:
     volumes:
       - ./redis:/etc/redis-config:ro
     ports:
-      - "36381:26379"
+      - "127.0.0.1:36381:26379"
     depends_on:
       - master-0
       - master-1
@@ -263,6 +275,15 @@ volumes:
   postgres_data:
   grafana_data:
   prometheus_data:
+
+# Одиночные конфиг-файлы передаём через docker configs, а не файловые
+# bind-mount'ы: в Docker Desktop + WSL2 файловые маунты ломаются после
+# каждого рестарта WSL (exit 127, "not a directory" в OCI runtime).
+configs:
+  nginx_conf:
+    file: ./nginx/nginx.conf
+  runner_cfg:
+    file: ./runner.cfg
 
 networks:
   app_network:

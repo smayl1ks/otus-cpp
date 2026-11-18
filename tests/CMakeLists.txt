@@ -9,6 +9,7 @@ add_executable(unit_tests
     map_controller_test.cpp
     metrics_collector_test.cpp
     polygon_geometry_test.cpp
+    run_closing_race_test.cpp
     run_point_test.cpp
     run_validator_test.cpp
     session_manager_zones_test.cpp

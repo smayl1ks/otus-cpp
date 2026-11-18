@@ -25,7 +25,8 @@ template <typename Stream>
 class WebSocketSession : public session::UserSession, public std::enable_shared_from_this<WebSocketSession<Stream>>
 {
 private:
-    using WriteChannel = net::experimental::concurrent_channel<void(sys::error_code, std::string)>;
+    using SharedPayload = std::shared_ptr<const std::string>;
+    using WriteChannel = net::experimental::concurrent_channel<void(sys::error_code, SharedPayload)>;
 
     static constexpr std::size_t kMaxFrameBytes = 256 * 1024; // largest legal Envelope ~60 KB
     static constexpr std::size_t kWriteQueueLimit = 128;
@@ -102,7 +103,7 @@ private:
                 break;
             }
 
-            if (msg.empty())
+            if (!msg) // nullptr payload = close sentinel pushed by RequestClose
             {
                 const auto code = static_cast<websocket::close_code>(m_close_code.load(std::memory_order_relaxed));
                 sys::error_code close_ec;
@@ -111,7 +112,8 @@ private:
             }
 
             sys::error_code write_ec;
-            co_await m_ws.async_write(net::buffer(msg), net::redirect_error(net::use_awaitable, write_ec));
+            co_await m_ws.async_write(net::buffer(msg->data(), msg->size()),
+                                      net::redirect_error(net::use_awaitable, write_ec));
 
             if (write_ec)
             {
@@ -147,7 +149,7 @@ public:
         {
             return;
         }
-        if (!m_write_channel.try_send(sys::error_code{}, std::string{}))
+        if (!m_write_channel.try_send(sys::error_code{}, nullptr))
         {
             Close(); // queue full or loop already gone
         }
@@ -216,7 +218,7 @@ public:
         return m_user_id;
     }
 
-    void Send(std::string message) override
+    void Send(SharedPayload message) override
     {
         if (m_closed)
         {
@@ -245,8 +247,8 @@ public:
 
     void SendProtobuf(const run::proto::Envelope& envelope) override
     {
-        std::string payload;
-        if (!envelope.SerializeToString(&payload))
+        auto payload = std::make_shared<std::string>();
+        if (!envelope.SerializeToString(payload.get()))
         {
             LOG_ERROR("Failed to serialize Protobuf Envelope for user {}", m_user_id);
             return;

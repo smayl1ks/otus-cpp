@@ -68,6 +68,7 @@ public:
         {
             return;
         }
+        auto binary_payload = std::make_shared<const std::string>(std::move(serialized));
 
         const uint64_t hex9 = gameplay::territory_conquest::ZoneChannelHelper::ExtractH3Zone(channel);
         if (hex9 == 0 || !m_h3_service)
@@ -92,7 +93,7 @@ public:
 
         if (const auto parent6 = m_h3_service->GetParent(hex9, 6); parent6.has_value())
         {
-            m_sessions->BroadcastToZone(*parent6, serialized, std::move(filter));
+            m_sessions->BroadcastToZone(*parent6, std::move(binary_payload), std::move(filter));
         }
     }
 

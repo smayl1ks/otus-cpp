@@ -23,6 +23,7 @@ struct NetworkConfig
     std::string address;
     unsigned short https_port;
     unsigned short http_port;
+    unsigned short shutdown_drain_seconds;
 };
 
 struct SSLConfig
@@ -43,8 +44,7 @@ struct PostgresConfig
 
     std::string ConnectionString() const
     {
-        return fmt::format("host={} port={} dbname={} user={} password={}",
-                           host, port, dbname, user, password);
+        return fmt::format("host={} port={} dbname={} user={} password={}", host, port, dbname, user, password);
     }
 };
 

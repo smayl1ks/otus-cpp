@@ -31,7 +31,10 @@ public:
     virtual net::any_io_executor GetExecutor() = 0;
     virtual uint64_t GetId() const noexcept = 0;
 
-    virtual void Send(std::string bytes) = 0;
+    /// Takes a shared, immutable payload: broadcasting to N subscribers copies
+    /// only the shared_ptr (refcount), never the bytes. nullptr acts as the
+    /// close sentinel inside the write loop
+    virtual void Send(std::shared_ptr<const std::string> bytes) = 0;
     virtual void SendProtobuf(const run::proto::Envelope& envelope) = 0;
     virtual void RequestClose(int close_code = 1000) = 0;
     virtual void Close() = 0;

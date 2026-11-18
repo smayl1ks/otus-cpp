@@ -373,6 +373,15 @@ boost::asio::awaitable<bool> RedisActiveRunStore::TryClaimClosingAsync(const std
     co_return claimed.has_value() && *claimed;
 }
 
+boost::asio::awaitable<bool> RedisActiveRunStore::IsClosingAsync(const std::string& session_id)
+{
+    if (session_id.empty())
+    {
+        co_return false;
+    }
+    co_return co_await m_client->ExistsAsync(fmt::format("run:{{{}}}:closing", session_id));
+}
+
 boost::asio::awaitable<void> RedisActiveRunStore::ReleaseClosingAsync(const std::string& session_id)
 {
     if (!session_id.empty())

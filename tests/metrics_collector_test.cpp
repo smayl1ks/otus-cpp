@@ -32,7 +32,7 @@ public:
         return m_id;
     }
 
-    void Send(std::string) override
+    void Send(std::shared_ptr<const std::string>) override
     {
     }
 

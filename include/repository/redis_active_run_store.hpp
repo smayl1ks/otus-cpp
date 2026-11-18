@@ -42,6 +42,7 @@ public:
 
     // Idempotent close
     boost::asio::awaitable<bool> TryClaimClosingAsync(const std::string& session_id) override;
+    boost::asio::awaitable<bool> IsClosingAsync(const std::string& session_id) override;
     boost::asio::awaitable<void> ReleaseClosingAsync(const std::string& session_id) override;
     boost::asio::awaitable<bool> SaveRunSummaryAsync(const StoredRunSummary& summary) override;
     boost::asio::awaitable<std::optional<StoredRunSummary>> GetRunSummaryAsync(const std::string& session_id) override;

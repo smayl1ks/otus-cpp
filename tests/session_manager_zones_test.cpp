@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace
 {
@@ -34,15 +35,15 @@ public:
         return m_id;
     }
 
-    void Send(std::string bytes) override
+    void Send(std::shared_ptr<const std::string> bytes) override
     {
         sent_count.fetch_add(1, std::memory_order_relaxed);
-        last_payload = std::move(bytes);
+        last_payload = *bytes;
     }
 
     void SendProtobuf(const run::proto::Envelope& envelope) override
     {
-        Send(envelope.SerializeAsString());
+        Send(std::make_shared<const std::string>(envelope.SerializeAsString()));
     }
 
     void RequestClose(int = 1000) override
@@ -111,7 +112,7 @@ TEST(SessionManagerZones, BroadcastReachesOnlySubscribedZone)
     manager.UpdateViewportSubscription(viewer_a, {kZoneA});
     manager.UpdateViewportSubscription(viewer_b, {kZoneB});
 
-    manager.BroadcastToZone(kZoneA, "ping");
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("ping"));
 
     EXPECT_EQ(viewer_a->sent_count.load(), 1);
     EXPECT_EQ(viewer_b->sent_count.load(), 0);
@@ -126,14 +127,14 @@ TEST(SessionManagerZones, FullSetReplaceMovesSubscription)
 
     // Idempotent full-set semantics: the same zone again is a no-op
     manager.UpdateViewportSubscription(viewer, {kZoneA});
-    manager.BroadcastToZone(kZoneA, "one");
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("one"));
     EXPECT_EQ(viewer->sent_count.load(), 1);
 
     // Moving to another zone unsubscribes the old one
     manager.UpdateViewportSubscription(viewer, {kZoneB});
-    manager.BroadcastToZone(kZoneA, "old");
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("old"));
     EXPECT_EQ(viewer->sent_count.load(), 1);
-    manager.BroadcastToZone(kZoneB, "new");
+    manager.BroadcastToZone(kZoneB, std::make_shared<const std::string>("new"));
     EXPECT_EQ(viewer->sent_count.load(), 2);
 }
 
@@ -144,14 +145,14 @@ TEST(SessionManagerZones, MultiZoneAndRemoval)
     manager.AddSession(1, viewer);
     manager.UpdateViewportSubscription(viewer, {kZoneA, kZoneB});
 
-    manager.BroadcastToZone(kZoneA, "a");
-    manager.BroadcastToZone(kZoneA, "a2");
-    manager.BroadcastToZone(kZoneB, "b");
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("a"));
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("a2"));
+    manager.BroadcastToZone(kZoneB, std::make_shared<const std::string>("b"));
     EXPECT_EQ(viewer->sent_count.load(), 3);
 
     manager.RemoveSession(1, viewer.get());
-    manager.BroadcastToZone(kZoneA, "after-remove");
-    manager.BroadcastToZone(kZoneB, "after-remove");
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("after-remove"));
+    manager.BroadcastToZone(kZoneB, std::make_shared<const std::string>("after-remove"));
     EXPECT_EQ(viewer->sent_count.load(), 3); // no delivery after removal
     EXPECT_EQ(manager.GetActiveSessionsCount(), 0);
 }
@@ -174,7 +175,7 @@ TEST(SessionManagerZones, BroadcastFilterTargetsTeamMembersOnly)
     manager.UpdateViewportSubscription(teamless, {kZoneA});
 
     constexpr uint64_t kTeamId = 7;
-    manager.BroadcastToZone(kZoneA, "team-ping", [kTeamId](const UserSession& session)
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("team-ping"), [kTeamId](const UserSession& session)
                             { return session.GetTeamId() == std::optional<uint64_t>(kTeamId); });
 
     EXPECT_EQ(member->sent_count.load(), 1);   // same team: receives
@@ -182,7 +183,7 @@ TEST(SessionManagerZones, BroadcastFilterTargetsTeamMembersOnly)
     EXPECT_EQ(teamless->sent_count.load(), 0); // no team: filtered out
 
     // No filter = public broadcast: everyone receives
-    manager.BroadcastToZone(kZoneA, "public");
+    manager.BroadcastToZone(kZoneA, std::make_shared<const std::string>("public"));
     EXPECT_EQ(member->sent_count.load(), 2);
     EXPECT_EQ(outsider->sent_count.load(), 1);
     EXPECT_EQ(teamless->sent_count.load(), 1);

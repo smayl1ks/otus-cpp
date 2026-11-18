@@ -76,6 +76,7 @@ void ConfigValidator::DumpToLog() const
     LOG_INFO("Network address: {}", m_config_data.network.address);
     LOG_INFO("HTTP port: {}", m_config_data.network.http_port);
     LOG_INFO("HTTPS port: {}", m_config_data.network.https_port);
+    LOG_INFO("Shutdown drain: {} s", m_config_data.network.shutdown_drain_seconds);
     LOG_INFO("SSL status: {}", m_config_data.ssl.ssl_run_status ? "ON" : "OFF");
 
     if (m_config_data.ssl.ssl_run_status)

@@ -145,7 +145,10 @@ void ConfigOptions::SetCommonOptions()
         "Directory for temporary file uploads before processing")(
         "network.address", po::value<std::string>()->default_value(g_DefaultServerAddress), "Server bind address")(
         "network.https.port", po::value<unsigned short>()->default_value(g_DefaultHTTPSPort),
-        "HTTPS port")("network.http.port", po::value<unsigned short>()->default_value(g_DefaultHTTPPort), "HTTP port")(
+        "HTTPS port")("network.http.port", po::value<unsigned short>()->default_value(g_DefaultHTTPPort),
+                      "HTTP port")("network.shutdown_drain_seconds",
+                                   po::value<unsigned short>()->default_value(g_DefaultShutdownDrainSeconds),
+                                   "Graceful shutdown drain for live sessions, seconds")(
         "ssl.run-ssl", po::value<bool>()->default_value(g_SSLDefaultRunStatus),
                           "Enable SSL")("ssl.cert", po::value<std::string>()->default_value(g_DefaultSSLCertFile),
                                         "Directory for served ssl certificate file")(

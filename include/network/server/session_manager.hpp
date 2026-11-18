@@ -49,8 +49,9 @@ public:
     void UpdateViewportSubscription(SessionPtr session, const std::vector<uint64_t>& new_h3_zones);
 
     /// Broadcasts to every session subscribed to the zone; an empty filter
-    /// targets all subscribers (team radar passes a membership predicate)
-    void BroadcastToZone(uint64_t zone_h3_idx, const std::string& binary_envelope,
+    /// targets all subscribers (team radar passes a membership predicate).
+    /// The payload is shared, not copied: N subscribers cost N refcount bumps
+    void BroadcastToZone(uint64_t zone_h3_idx, const std::shared_ptr<const std::string>& binary_envelope,
                          std::function<bool(const session::UserSession&)> filter = {});
 
     /// Graceful shutdown: flush + 1001 Going Away on every live session

@@ -59,6 +59,7 @@ void ServerConfig::LoadNetworkConfig(const po::variables_map& vm)
     m_config_data.network.address = vm["network.address"].as<std::string>();
     m_config_data.network.https_port = vm["network.https.port"].as<unsigned short>();
     m_config_data.network.http_port = vm["network.http.port"].as<unsigned short>();
+    m_config_data.network.shutdown_drain_seconds = vm["network.shutdown_drain_seconds"].as<unsigned short>();
 }
 
 void ServerConfig::LoadLoggerConfig(const po::variables_map& vm)

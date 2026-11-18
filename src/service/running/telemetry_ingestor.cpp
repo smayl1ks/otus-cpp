@@ -60,6 +60,16 @@ TelemetryIngestor::ProcessBatchAsync(int64_t user_id, const run::proto::telemetr
         co_return ack;
     }
 
+    if (co_await m_run_store->IsClosingAsync(batch.session_id()))
+    {
+        // Finalization owns the track: a batch accepted now would get a
+        // success ack and then be silently dropped by the close pipeline.
+        // Backpressure status tells the client to stop streaming the session
+        LOG_INFO("[ingestor] session '{}' is closing, batch '{}' rejected", batch.session_id(), batch.batch_uuid());
+        ack.set_system_status(common::SYSTEM_STATUS_SERVICE_UNAVAILABLE);
+        co_return ack;
+    }
+
     if (batch.state() == run::proto::telemetry::RUNNING_STATE_PAUSED && batch.points().empty())
     {
         LOG_DEBUG("[ingestor] heartbeat for session '{}'", batch.session_id());

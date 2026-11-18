@@ -242,9 +242,28 @@ OfflineUploadService::CommitAsync(int64_t user_id, const run::proto::session::Of
         co_return response;
     }
 
+    // Claim closing BEFORE assembling the final track (same invariant as the
+    // live close): the ingestor rejects batches of a closing session, so the
+    // assembled track is the last one. Rejected commits release the lease back
+    if (!(co_await m_run_store->TryClaimClosingAsync(request.session_id())))
+    {
+        if (auto stored = co_await m_run_store->GetRunSummaryAsync(request.session_id());
+            stored.has_value() && stored->user_id == user_id)
+        {
+            response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_ALREADY_COMMITTED);
+            *response.mutable_summary() = network::mappers::BuildSummary(*stored);
+            co_return response;
+        }
+        LOG_INFO("[upload] commit of session '{}' refused: another finalizer holds the closing marker",
+                 request.session_id());
+        response.set_system_status(common::SYSTEM_STATUS_INTERNAL_SERVER_ERROR);
+        co_return response;
+    }
+
     const auto accepted = co_await m_run_store->GetAcceptedChunksAsync(request.session_id());
     if (static_cast<int32_t>(accepted.size()) < meta->total_chunks)
     {
+        co_await m_run_store->ReleaseClosingAsync(request.session_id());
         response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_UPLOAD_NOT_COMPLETE);
         co_return response;
     }
@@ -255,6 +274,7 @@ OfflineUploadService::CommitAsync(int64_t user_id, const run::proto::session::Of
     {
         LOG_INFO("[upload] commit of session '{}' rejected: {} points uploaded, {} declared", request.session_id(),
                  track.size(), meta->total_points_count);
+        co_await m_run_store->ReleaseClosingAsync(request.session_id());
         response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_TOO_MANY_POINTS);
         co_return response;
     }
@@ -262,6 +282,7 @@ OfflineUploadService::CommitAsync(int64_t user_id, const run::proto::session::Of
     {
         LOG_INFO("[upload] commit of session '{}' rejected: {} of {} declared points uploaded", request.session_id(),
                  track.size(), meta->total_points_count);
+        co_await m_run_store->ReleaseClosingAsync(request.session_id());
         response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_SESSION_CONFLICT);
         co_return response;
     }
@@ -272,6 +293,7 @@ OfflineUploadService::CommitAsync(int64_t user_id, const run::proto::session::Of
         {
             LOG_INFO("[upload] commit of session '{}' rejected: point ts {} outside declared window [{}, {}]",
                      request.session_id(), ts, meta->start_timestamp_ms, meta->finish_timestamp_ms);
+            co_await m_run_store->ReleaseClosingAsync(request.session_id());
             response.set_reject_reason(OfflineRunRejectReason::OFFLINE_REJECT_REASON_INVALID_TIME_RANGE);
             co_return response;
         }
@@ -286,10 +308,11 @@ OfflineUploadService::CommitAsync(int64_t user_id, const run::proto::session::Of
     run.visibility = meta->visibility;
     run.started_at_ms = meta->start_timestamp_ms;
 
-    auto summary =
-        co_await m_finalizer->FinalizeAsync(run, repository::RunCloseReason::kFinished, track, utils::NowMs());
+    auto summary = co_await m_finalizer->FinalizeAsync(run, repository::RunCloseReason::kFinished, track,
+                                                       utils::NowMs(), ClosingLease{});
     if (!summary.has_value())
     {
+        // the closing lease was released inside the finalizer, upload stays open
         response.set_system_status(common::SYSTEM_STATUS_INTERNAL_SERVER_ERROR);
         co_return response;
     }

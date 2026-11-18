@@ -40,8 +40,12 @@ struct ICaptureEventPublisher
     virtual net::awaitable<void> PublishAsync(const CaptureNotice& notice) = 0;
 };
 
-/// Unified run finalizer for Finish, Cancel, and Offline Uploads (handles claim, compute,
-/// persist, fan-out, and cleanup phases)
+struct ClosingLease
+{
+};
+
+/// Unified run finalizer for Finish, Cancel, and Offline Uploads (handles compute,
+/// persist, fan-out, and cleanup phases; the closing claim is owned by the caller)
 class RunFinalizer
 {
 public:
@@ -54,10 +58,9 @@ public:
                  std::shared_ptr<ICaptureEventPublisher> capture_publisher,
                  std::shared_ptr<repository::IUserRepository> user_repository);
 
-    /// Finalizes the run. Returns std::nullopt if already closing or persistence failed
     net::awaitable<std::optional<repository::StoredRunSummary>>
     FinalizeAsync(const repository::ActiveRunRecord& run, repository::RunCloseReason close_reason,
-                  std::span<const gameplay::workout_tracking::RunPoint> track, int64_t now_ms);
+                  std::span<const gameplay::workout_tracking::RunPoint> track, int64_t now_ms, ClosingLease lease);
 
 private:
     struct ComputedClose

@@ -190,16 +190,10 @@ RunFinalizer::ComputedClose RunFinalizer::ComputeClose(const repository::ActiveR
 
 net::awaitable<std::optional<repository::StoredRunSummary>>
 RunFinalizer::FinalizeAsync(const repository::ActiveRunRecord& run, repository::RunCloseReason close_reason,
-                            std::span<const RunPoint> track, int64_t now_ms)
+                            std::span<const RunPoint> track, int64_t now_ms, ClosingLease /*lease*/)
 {
     LOG_INFO("[finalizer] closing session '{}' (user {}, reason: {}, track points: {})", run.session_id, run.user_id,
              close_reason == repository::RunCloseReason::kFinished ? "finished" : "cancelled", track.size());
-
-    if (!(co_await m_run_store->TryClaimClosingAsync(run.session_id)))
-    {
-        LOG_INFO("[finalizer] session '{}' is already being closed by someone else", run.session_id);
-        co_return std::nullopt;
-    }
 
     ComputedClose computed;
     if (m_work_context != nullptr)

@@ -83,7 +83,7 @@ void SessionManager::RemoveSession(uint64_t user_id, SessionRawPtr raw_ptr)
     }
 }
 
-void SessionManager::BroadcastToZone(uint64_t h3_zone, const std::string& payload,
+void SessionManager::BroadcastToZone(uint64_t h3_zone, const std::shared_ptr<const std::string>& payload,
                                      std::function<bool(const UserSession&)> filter)
 {
     std::vector<SessionPtr> target_sessions; // TODO: Optimize target_sessions allocation for high-density zones
@@ -104,7 +104,7 @@ void SessionManager::BroadcastToZone(uint64_t h3_zone, const std::string& payloa
 
     for (const auto& session : target_sessions)
     {
-        session->Send(payload);
+        session->Send(payload); // shared payload: no per-subscriber copy
     }
 }
 

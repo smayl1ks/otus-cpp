@@ -28,6 +28,7 @@ constexpr int g_DefaultThreads = 4;
 constexpr auto g_DefaultServerAddress = "0.0.0.0";
 constexpr unsigned short g_DefaultHTTPSPort = 8080;
 constexpr unsigned short g_DefaultHTTPPort = 8081;
+constexpr unsigned short g_DefaultShutdownDrainSeconds = 3;
 
 constexpr auto g_LoggerDefaultLevel = "info";
 constexpr auto g_LoggerDefaultPattern = "[%Y-%m-%d %H:%M:%S.%f] [%l] %v";

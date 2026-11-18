@@ -60,6 +60,10 @@ public:
     /// this session right now
     virtual boost::asio::awaitable<bool> TryClaimClosingAsync(const std::string& session_id) = 0;
 
+    /// True while the closing marker is held (EXISTS run:closing:{session_id}):
+    /// finalization owns the track, so new telemetry batches must be rejected
+    virtual boost::asio::awaitable<bool> IsClosingAsync(const std::string& session_id) = 0;
+
     /// Drops the closing marker after a failed finalize attempt so a retry
     /// can start over. A successful close removes it inside DropRunDataAsync
     virtual boost::asio::awaitable<void> ReleaseClosingAsync(const std::string& session_id) = 0;

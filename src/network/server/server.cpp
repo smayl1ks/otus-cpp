@@ -7,6 +7,13 @@
 #include "network/server/http_session.hpp"
 #include "network/server/radar_fanout.hpp"
 
+#include <cerrno>
+#include <cstring>
+
+#if defined(__linux__)
+#include <sys/socket.h>
+#endif
+
 namespace run::server
 {
 
@@ -89,9 +96,10 @@ Server::Server(unsigned int io_threads, unsigned int work_threads)
             m_session_manager->CloseAllSessions();
             net::co_spawn(
                 m_context.GetLowerLayerIOContext(),
-                [this]() -> net::awaitable<void>
+                [this, drain_seconds = config::ServerConfig::Get().GetNetworkSettings().shutdown_drain_seconds]() -> net::awaitable<void>
                 {
-                    net::steady_timer drain_timer(m_context.GetLowerLayerIOContext(), std::chrono::seconds(3));
+                    net::steady_timer drain_timer(m_context.GetLowerLayerIOContext(),
+                                                  std::chrono::seconds(drain_seconds));
                     co_await drain_timer.async_wait(net::use_awaitable);
                     Stop();
                 },
@@ -116,6 +124,21 @@ net::awaitable<void> Server::ListenAsync(unsigned short port, bool use_tls)
     }
 
     acceptor.set_option(net::socket_base::reuse_address(true), ec);
+
+    // Allows several server instances (one acceptor per instance) to bind the
+    // same port and let the kernel distribute incoming connections between
+    // them; Linux 3.9+, other platforms run a single acceptor (not fatal)
+#if defined(__linux__)
+    {
+        const int reuse_port_enabled = 1;
+        if (::setsockopt(acceptor.native_handle(), SOL_SOCKET, SO_REUSEPORT, &reuse_port_enabled,
+                         sizeof(reuse_port_enabled)) != 0)
+        {
+            LOG_WARN("SO_REUSEPORT is not available on port {}: {}", port, std::strerror(errno));
+        }
+    }
+#endif
+
     acceptor.bind(endpoint, ec);
     if (ec)
     {
@@ -144,6 +167,15 @@ net::awaitable<void> Server::ListenAsync(unsigned short port, bool use_tls)
         }
 
         monitoring::MetricsCollector::Instance().IncrementConnectionsAccepted(use_tls);
+
+        // Radar pings and telemetry acks are small frames: without NODELAY
+        // Nagle x delayed-ACK interaction can stall them for up to tens of ms
+        sys::error_code no_delay_ec;
+        socket.set_option(net::ip::tcp::no_delay(true), no_delay_ec);
+        if (no_delay_ec)
+        {
+            LOG_WARN("Failed to set TCP_NODELAY on a new connection: {}", no_delay_ec.message());
+        }
 
         if (use_tls)
         {

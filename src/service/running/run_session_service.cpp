@@ -179,8 +179,14 @@ RunSessionService::CloseRunAsync(int64_t user_id, const std::string& session_id,
                 run.started_at_ms = meta->start_timestamp_ms;
 
                 LOG_INFO("[session] aborting offline upload of session '{}' (user {})", session_id, user_id);
+                if (!(co_await m_run_store->TryClaimClosingAsync(session_id)))
+                {
+                    LOG_INFO("[session] cancel of upload '{}' refused: another finalizer holds the closing marker",
+                             session_id);
+                    co_return CloseRunOutcome{CloseRunOutcome::Status::kFailed, std::nullopt};
+                }
                 auto summary = co_await m_run_finalizer->FinalizeAsync(run, repository::RunCloseReason::kCancelled, {},
-                                                                       utils::NowMs());
+                                                                       utils::NowMs(), ClosingLease{});
                 if (!summary.has_value())
                 {
                     co_return CloseRunOutcome{CloseRunOutcome::Status::kFailed, std::nullopt};
@@ -191,10 +197,27 @@ RunSessionService::CloseRunAsync(int64_t user_id, const std::string& session_id,
         co_return CloseRunOutcome{CloseRunOutcome::Status::kNotFound, std::nullopt};
     }
 
+    // Claim closing BEFORE reading the track: once the marker is set the
+    // ingestor rejects new batches (IsClosingAsync), so the track read below is
+    // the final one and nothing appended after it can be silently dropped
+    if (!(co_await m_run_store->TryClaimClosingAsync(session_id)))
+    {
+        if (auto stored = co_await m_run_store->GetRunSummaryAsync(session_id);
+            stored.has_value() && stored->user_id == user_id)
+        {
+            // finalization completed while we were competing for the marker
+            LOG_INFO("[session] close retry for already closed session '{}'", session_id);
+            co_return CloseRunOutcome{CloseRunOutcome::Status::kAlreadyClosed, std::move(stored)};
+        }
+        LOG_INFO("[session] close of session '{}' refused: another finalizer holds the closing marker", session_id);
+        co_return CloseRunOutcome{CloseRunOutcome::Status::kFailed, std::nullopt};
+    }
+
     auto track = co_await m_run_store->GetTrackAsync(session_id);
-    auto summary = co_await m_run_finalizer->FinalizeAsync(*record, close_reason, track, utils::NowMs());
+    auto summary = co_await m_run_finalizer->FinalizeAsync(*record, close_reason, track, utils::NowMs(), ClosingLease{});
     if (!summary.has_value())
     {
+        // the closing lease was released inside the finalizer, the run stays open
         co_return CloseRunOutcome{CloseRunOutcome::Status::kFailed, std::nullopt};
     }
     co_return CloseRunOutcome{CloseRunOutcome::Status::kClosed, std::move(summary)};
